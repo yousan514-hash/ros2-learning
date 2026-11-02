@@ -59,7 +59,7 @@ pixi run ros2 topic hz /topic   # 約 2Hz
 
 | パス | 内容 |
 |---|---|
-| [`src/py_pubsub`](src/py_pubsub) | Python のパブリッシャー・サブスクライバー、サービス、パラメータ、launch（公式チュートリアル） |
+| [`src/py_pubsub`](src/py_pubsub) | Python のパブリッシャー・サブスクライバー、サービス、パラメータ、launch、tf2、rosbag2（公式チュートリアル） |
 | [`pixi.toml`](pixi.toml) | 環境と実行コマンドの定義 |
 | [`LOG.md`](LOG.md) | 日ごとの学習記録（やったこと・詰まったこと・解決策） |
 
@@ -70,7 +70,9 @@ pixi run ros2 topic hz /topic   # 約 2Hz
 - [x] Python でパブリッシャーとサブスクライバーを書く
 - [x] サービスとパラメータ
 - [x] launch ファイル
-- [ ] turtlesim で移動ロボットを動かす
+- [x] tf2: 座標変換を送る・受け取る（ロボットとカメラの位置関係）
+- [x] rosbag2: ノードの中から記録して、再生する
+- [ ] turtlesim で移動ロボットを動かす（C++ のため、Visual C++ ランタイムの更新待ち）
 - [ ] Isaac Sim × ROS 2（公式の `IsaacSim-ros_workspaces` に移る）
 - [ ] Isaac Lab で強化学習
 

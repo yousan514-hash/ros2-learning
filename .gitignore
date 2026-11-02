@@ -7,3 +7,5 @@ log/
 # python
 __pycache__/
 *.pyc
+# rosbag2 の記録
+bags/

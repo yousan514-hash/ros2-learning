@@ -25,6 +25,9 @@ setup(
             "add_server = py_pubsub.add_two_ints_server:main",
             "add_client = py_pubsub.add_two_ints_client:main",
             "param_talker = py_pubsub.param_talker:main",
+            "frame_broadcaster = py_pubsub.frame_broadcaster:main",
+            "frame_listener = py_pubsub.frame_listener:main",
+            "bag_recorder = py_pubsub.bag_recorder:main",
         ],
     },
 )
