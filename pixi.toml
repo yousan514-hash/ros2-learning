@@ -1,0 +1,21 @@
+[workspace]
+name = "ros2-learning"
+description = "ROS 2 Jazzy の学習記録（Windows ネイティブ / RoboStack）"
+channels = ["https://prefix.dev/robostack-jazzy", "https://prefix.dev/conda-forge"]
+platforms = ["win-64"]
+
+[tasks]
+build = "colcon build --merge-install"
+talker = "cmd /c \"call install\\local_setup.bat && ros2 run py_pubsub talker\""
+listener = "cmd /c \"call install\\local_setup.bat && ros2 run py_pubsub listener\""
+# C++ のサンプルが落ちる問題の再現用（LOG.md の 2026-11-02 を参照）
+talker_cpp = "$CONDA_PREFIX/Library/lib/demo_nodes_cpp/talker.exe"
+
+[dependencies]
+python = "3.12.*"
+ros-jazzy-ros-base = "*"
+ros-jazzy-turtlesim = "*"
+ros-jazzy-demo-nodes-cpp = "*"
+ros-jazzy-demo-nodes-py = "*"
+colcon-common-extensions = "*"
+setuptools = "<=79.0.1"
