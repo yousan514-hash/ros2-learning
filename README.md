@@ -33,6 +33,20 @@ pixi run talker     # 0.5秒ごとに "Hello World: N" を送る
 pixi run listener   # 受け取って表示する
 ```
 
+サービス・パラメータ・launch:
+
+```powershell
+# サービス（2つの整数を足す）
+pixi run cmd /c "call install\local_setup.bat && ros2 run py_pubsub add_server"
+pixi run cmd /c "call install\local_setup.bat && ros2 run py_pubsub add_client 2 3"   # → 5
+
+# launch で talker と listener をまとめて起動し、パラメータを渡す
+pixi run cmd /c "call install\local_setup.bat && ros2 launch py_pubsub pubsub.launch.py greeting:=Konnichiwa period:=1.0"
+
+# 動いている途中でパラメータを変える
+pixi run ros2 param set /param_talker greeting Changed
+```
+
 確認用のコマンド:
 
 ```powershell
@@ -45,7 +59,7 @@ pixi run ros2 topic hz /topic   # 約 2Hz
 
 | パス | 内容 |
 |---|---|
-| [`src/py_pubsub`](src/py_pubsub) | Python のパブリッシャーとサブスクライバー（公式チュートリアル） |
+| [`src/py_pubsub`](src/py_pubsub) | Python のパブリッシャー・サブスクライバー、サービス、パラメータ、launch（公式チュートリアル） |
 | [`pixi.toml`](pixi.toml) | 環境と実行コマンドの定義 |
 | [`LOG.md`](LOG.md) | 日ごとの学習記録（やったこと・詰まったこと・解決策） |
 
@@ -54,8 +68,8 @@ pixi run ros2 topic hz /topic   # 約 2Hz
 - [x] Windows に ROS 2 Jazzy を入れる（pixi / RoboStack）
 - [x] デモのノードを動かし、ノードとトピックを確認する
 - [x] Python でパブリッシャーとサブスクライバーを書く
-- [ ] サービスとパラメータ
-- [ ] launch ファイル
+- [x] サービスとパラメータ
+- [x] launch ファイル
 - [ ] turtlesim で移動ロボットを動かす
 - [ ] Isaac Sim × ROS 2（公式の `IsaacSim-ros_workspaces` に移る）
 - [ ] Isaac Lab で強化学習

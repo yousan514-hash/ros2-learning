@@ -11,6 +11,10 @@ listener = "cmd /c \"call install\\local_setup.bat && ros2 run py_pubsub listene
 # C++ のサンプルが落ちる問題の再現用（LOG.md の 2026-11-02 を参照）
 talker_cpp = "$CONDA_PREFIX/Library/lib/demo_nodes_cpp/talker.exe"
 
+[activation.env]
+# 日本語を含むファイルや環境変数を、colcon が cp932 で読んで落ちるのを防ぐ
+PYTHONUTF8 = "1"
+
 [dependencies]
 python = "3.12.*"
 ros-jazzy-ros-base = "*"
