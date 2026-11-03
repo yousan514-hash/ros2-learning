@@ -28,6 +28,9 @@ setup(
             "frame_broadcaster = py_pubsub.frame_broadcaster:main",
             "frame_listener = py_pubsub.frame_listener:main",
             "bag_recorder = py_pubsub.bag_recorder:main",
+            "fibonacci_server = py_pubsub.fibonacci_server:main",
+            "fibonacci_client = py_pubsub.fibonacci_client:main",
+            "turtle_draw = py_pubsub.turtle_draw:main",
         ],
     },
 )

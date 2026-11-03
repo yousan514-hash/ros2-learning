@@ -89,3 +89,44 @@ C++ のノードは Visual C++ ランタイムの更新待ちなので、Python 
 - **tf2** は「どの部品が、どの部品から見てどこにあるか」の木構造。動く関係（tf）と、動かない関係（tf_static）を分けて送る。たどる道筋は tf2 が自動で計算する
 - 向き（回転）はクォータニオンで表す。z 軸まわりだけなら `(0, 0, sin(θ/2), cos(θ/2))`
 - **rosbag2** は流れたデータをそのまま保存して、あとで同じように流し直せる。Isaac Sim のセンサーのデータを記録して、あとで画像処理を試すときに使える
+
+## 2026-11-03 — C++ のノードを動かす、アクション、スマート アプリ コントロール
+
+### C++ のノード（Visual C++ ランタイム）
+- Visual C++ 再頒布可能パッケージの更新は、管理者の許可の画面が取り消されて終わった（`winget` の終了コード 1602）。Windows のランタイムは 14.24 のまま
+- 管理者権限なしで直す `tools/vcrt_local.py` を作った。環境に入っている新しいランタイム（14.51）を、C++ の exe があるフォルダに置く（Microsoft が認めている「ローカル配置」）
+  - System32 のほうが新しければ何もしない（あとで再頒布パッケージを更新すれば、自然に不要になる）
+  - 同じドライブならハードリンクで置くので、容量をほとんど使わない
+  - `--undo` で、置いたもの（環境のランタイムと中身が同じもの）だけを消す
+- `talker_cpp` と `turtlesim` のタスクは、先に `vcrt_local` を実行するようにした
+- **結果**: C++ の talker が落ちずに動いた（`Publishing: 'Hello World: 1'` … 1 秒ごと）
+
+### turtlesim が止められた（スマート アプリ コントロール）
+- turtlesim を起動すると `[WinError 4551] アプリケーション制御ポリシーによってこのファイルがブロックされました`
+- **調べ方**: イベントログ `Microsoft-Windows-CodeIntegrity/Operational` の ID 3077 に、止められたファイルが出ていた（`turtlesim_node.exe` と `turtlesim__rosidl_generator_py.dll`）。レジストリの `VerifiedAndReputablePolicyState` は 1（オン）
+- **原因**: Windows 11 の「スマート アプリ コントロール」は、読み込むすべての exe・DLL について、署名か、Microsoft のクラウドでの評判を確かめ、どちらもなければ止める（[解説](https://textslashplain.com/2026/04/28/smart-app-control/)）。conda-forge / RoboStack のファイルには署名がない。rclpy や demo_nodes_cpp は通り、turtlesim は止められた。評判の違いとみられる
+- **対処**: スマート アプリ コントロールをオフにすれば動くはず。セキュリティの設定なので、オフにするかは PC の持ち主が決める
+  - 2026 年 4 月の更新から、オフにしたあとでもオンに戻せるようになった（[topedia](https://blog.topedia.com/2026/04/smart-app-control-in-windows-11-can-now-be-re-enabled-without-reinstalling/)）
+  - ただし 10 月の更新 KB5127648（この PC に入っている）で、オフにした PC でオンに戻せなくなる不具合を Microsoft が認めている（[IT-Connect](https://www.it-connect.tech/windows-11-kb5127648-breaks-smart-app-control-in-october-2026-update/)）
+- 自分で C++ をビルドした exe・DLL も署名がないので、同じように止められるとみられる。Isaac Sim × ROS 2（`IsaacSim-ros_workspaces` を自分でビルドする）に進むときにも関係する
+
+### アクション（Fibonacci）
+- `fibonacci_server` / `fibonacci_client`: `example_interfaces/action/Fibonacci` を使う公式チュートリアル。turtlesim のアクション（`rotate_absolute`）は上の理由で使えないので、こちらにした
+- 計算の途中でも取り消しを受け付けるよう、`MultiThreadedExecutor` と `ReentrantCallbackGroup` を使った（スレッドが 1 本だと、計算している間は取り消しの依頼が処理されない）
+- **結果**:
+  - `order:=10` → 途中経過が 9 回届き、結果 `[0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55]`（succeeded）
+  - `order:=10 cancel_after:=1.2` → `[0, 1, 1, 2, 3]` で canceled
+  - `order:=100` → サーバーが断った（goal rejected）
+
+### 亀に字を書かせる（turtle_draw）
+- サービス（`teleport_absolute`、`clear`）で始点に移って画面を消し、トピック（`pose` を受け取り、`cmd_vel` を送る）で点を順にたどる。距離と向きのずれに比例して速さを決める（P 制御）。向きが合うまで進まないので、角がきれいに曲がる
+- turtlesim を動かせないので、turtlesim と同じ動きの式（16ms ごとに向き → 位置の順に更新し、最後の速度の指令を使い続ける）で確かめる `tools/check_turtle_draw.py` を作った
+- **結果**: 「F」の 5 点すべてに誤差 0.05 以内で着き、線分からのずれは最大 0.048（15.9 秒）。turtlesim の本体での確認は、スマート アプリ コントロールの判断待ち
+
+### 詰まったこと
+- アクションの頼み手で、ゴールのハンドルを `self.handle` に入れたら `AttributeError: handle cannot be modified after node creation`。`handle` は rclpy の Node がすでに使っている名前だった。`self.goal_handle` にした
+
+### 学んだこと
+- **アクション**は「頼む → 引き受ける／断る → 途中経過 → 結果」。途中で取り消せる。移動ロボットの「ここまで行って」（Nav2 の NavigateToPose）もこの仕組み
+- Windows で「ブロックされました」と出たら、ウイルス対策ではなく**スマート アプリ コントロール**のことがある。イベントログの CodeIntegrity で、止められたファイルがわかる
+- 動かせないものがあっても、**同じ式で動く小さなシミュレーション**を作れば、制御の考え方は先に確かめられる
