@@ -66,6 +66,10 @@ pixi run turtle_draw         # 亀に「F」の字を描かせる（別のター
 pixi run check_turtle_draw   # turtlesim を起動せずに、亀を動かす制御だけを確かめる
 ```
 
+<img src="docs/turtle_draw_F.png" width="280" alt="turtlesim の亀が「F」の字を描いたところ">
+
+亀の位置（`/turtle1/pose`）を見ながら、次の点との距離と向きのずれに比例して速度（`/turtle1/cmd_vel`）を決める（P 制御）。5 つの点すべてに誤差 0.05 以内で着いた。
+
 確認用のコマンド:
 
 ```powershell
@@ -89,8 +93,8 @@ pixi run ros2 topic hz /topic   # 約 2Hz
 | 症状 | 原因 | 対処 |
 |---|---|---|
 | colcon のビルドで `UnicodeDecodeError: 'cp932'` | 日本語を含むファイルを、Windows の標準の文字コードで読もうとする | `PYTHONUTF8=1`（`pixi.toml` で設定済み） |
-| C++ のノードが起動してすぐ落ちる（`0xC0000005`） | Windows に入っている Visual C++ ランタイムが古い（この PC は 2019 年の 14.2x） | 管理者なら Visual C++ 再頒布可能パッケージを最新にする。権限がなければ `pixi run vcrt_local`（環境の新しいランタイムを exe の隣に置く） |
-| 「アプリケーション制御ポリシーによってこのファイルがブロックされました」 | Windows 11 の**スマート アプリ コントロール**が、署名がなく評判のわからない exe や DLL を止める（この PC では turtlesim の本体と、その型の DLL） | スマート アプリ コントロールをオフにする（Windows セキュリティ → アプリとブラウザー コントロール）。オンのままでは、止められたパッケージは使えない。イベントログ `CodeIntegrity/Operational` の ID 3077 で、止められたファイルがわかる |
+| C++ のノードが起動してすぐ落ちる（`0xC0000005`） | Windows に入っている Visual C++ ランタイムが古い（この PC は 2019 年の 14.2x） | Visual C++ 再頒布可能パッケージを最新にする（この PC はこれで直った）。管理者の許可がもらえないときは `pixi run vcrt_local`（環境の新しいランタイムを exe の隣に置く） |
+| 「アプリケーション制御ポリシーによってこのファイルがブロックされました」 | Windows 11 の**スマート アプリ コントロール**が、署名がなく評判のわからない exe や DLL を止める（この PC では turtlesim の本体と、その型の DLL） | スマート アプリ コントロールをオフにする（Windows セキュリティ → アプリとブラウザー コントロール。この PC はオフにして turtlesim が動いた）。オンのままでは、止められたパッケージは使えない。イベントログ `CodeIntegrity/Operational` の ID 3077 で、止められたファイルがわかる |
 
 ## 進み具合
 
@@ -103,7 +107,7 @@ pixi run ros2 topic hz /topic   # 約 2Hz
 - [x] rosbag2: ノードの中から記録して、再生する
 - [x] C++ のノードを動かす（古い Visual C++ ランタイムを避ける）
 - [x] アクション: 時間のかかる仕事を頼み、途中経過を受け取り、取り消す
-- [ ] turtlesim で移動ロボットを動かす（亀に字を書かせるノードと、制御の確認は済み。turtlesim の本体が Windows のスマート アプリ コントロールに止められていて、実行はその設定の判断待ち）
+- [x] turtlesim で移動ロボットを動かす（亀に「F」の字を描かせる。位置を見ながら速度を決める P 制御）
 - [ ] Isaac Sim × ROS 2（公式の `IsaacSim-ros_workspaces` に移る）
 - [ ] Isaac Lab で強化学習
 
