@@ -70,6 +70,34 @@ pixi run check_turtle_draw   # turtlesim を起動せずに、亀を動かす制
 
 亀の位置（`/turtle1/pose`）を見ながら、次の点との距離と向きのずれに比例して速度（`/turtle1/cmd_vel`）を決める（P 制御）。5 つの点すべてに誤差 0.05 以内で着いた。
 
+### ロボット × ブロックチェーン: 稼働台帳（robot_ledger）
+
+ロボットの仕事を「**署名つき・ハッシュでつないだ台帳**」に記録し、**使用範囲の中で終わった仕事だけを数えて請求額を出す**。ブロックチェーンの芯（ID・署名・追記だけの鎖）を、小さく自分で作った練習。
+
+```powershell
+pixi run turtlesim                                                                      # 1. 亀の画面
+pixi run cmd /c "call install\local_setup.bat && ros2 run robot_ledger ledger_recorder"  # 2. 台帳に記録するノード
+pixi run turtle_draw                                                                    # 3. 亀が「F」を描く（仕事をする）
+# 4. 台帳を確かめる → 請求額を出す
+pixi run cmd /c "call install\local_setup.bat && ros2 run robot_ledger ledger_verify ledger/turtle1.jsonl --pubkey-file ledger/turtle1.pub"
+pixi run cmd /c "call install\local_setup.bat && ros2 run robot_ledger ledger_bill ledger/turtle1.jsonl --pubkey-file ledger/turtle1.pub --price 100 --max-error 0.05"
+```
+
+| しくみ | 中身 |
+|---|---|
+| ID | ロボットごとの Ed25519 の鍵。公開鍵のハッシュがロボットの ID（例: `robot:ac155ef6283cf4e9`） |
+| 署名 | 1行ずつロボットの秘密鍵で署名。秘密鍵（`ledger/*.key`）は Git に入れない |
+| ハッシュの鎖 | 各行に1つ前の行のハッシュ。途中を書き換えるとつながらなくなる |
+| 請求 | 登録された公開鍵で台帳を確かめてから、契約の「使用範囲」（誤差の上限）の中の仕事だけを数える |
+
+結果（2026-11-05）:
+- 亀が5つの点で仕事をし、台帳は7行（開始・仕事5件・終了）。確認は **OK**
+- 契約「1件100円・誤差0.05以内」→ **5件・500円**。「誤差0.046以内」に厳しくすると **3件・300円**（2件は範囲の外）
+- 台帳の1か所（点2の誤差 0.048 → 0.001）を書き換えると、**「中身が書き換えられている」で NG**、請求も拒否
+- テスト12件（書き換え・削除・ハッシュの計算し直し・別の鍵で作った偽の台帳・請求）: `python -m pytest src/robot_ledger/test`
+
+まだないもの: 何社もで台帳を持ち合う仕組み（合意）、公開のブロックチェーンへの記録、受け取る側（工場）の署名、支払い。
+
 確認用のコマンド:
 
 ```powershell
@@ -83,6 +111,7 @@ pixi run ros2 topic hz /topic   # 約 2Hz
 | パス | 内容 |
 |---|---|
 | [`src/py_pubsub`](src/py_pubsub) | Python のパブリッシャー・サブスクライバー、サービス、パラメータ、launch、tf2、rosbag2、アクション（公式チュートリアル）と、亀に字を書かせるノード |
+| [`src/robot_ledger`](src/robot_ledger) | ロボットの稼働を署名つきの台帳に記録し、使用範囲の中の仕事だけを数えて請求額を出す（ロボット × ブロックチェーンの練習） |
 | [`tools/vcrt_local.py`](tools/vcrt_local.py) | Windows の Visual C++ ランタイムが古いとき、新しいランタイムを C++ の exe の隣に置く（管理者権限なし） |
 | [`tools/check_turtle_draw.py`](tools/check_turtle_draw.py) | 亀を動かす制御を、turtlesim と同じ動きの式で確かめる |
 | [`pixi.toml`](pixi.toml) | 環境と実行コマンドの定義 |
@@ -108,6 +137,8 @@ pixi run ros2 topic hz /topic   # 約 2Hz
 - [x] C++ のノードを動かす（古い Visual C++ ランタイムを避ける）
 - [x] アクション: 時間のかかる仕事を頼み、途中経過を受け取り、取り消す
 - [x] turtlesim で移動ロボットを動かす（亀に「F」の字を描かせる。位置を見ながら速度を決める P 制御）
+- [x] ロボット × ブロックチェーン: 稼働を署名つきの台帳に記録し、働いた分だけ請求する（robot_ledger）
+- [ ] 台帳を Isaac Sim のロボット（Franka）にもつなぐ
 - [ ] Isaac Sim × ROS 2（公式の `IsaacSim-ros_workspaces` に移る）
 - [ ] Isaac Lab で強化学習
 

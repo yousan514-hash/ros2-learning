@@ -9,3 +9,6 @@ __pycache__/
 *.pyc
 # rosbag2 の記録
 bags/
+# robot_ledger の台帳と鍵（秘密鍵は絶対に上げない）
+ledger/
+*.key
