@@ -1,0 +1,34 @@
+{
+  "note": "寸法はすべて mm。ISO 4017（六角ボルト）・ISO 4032（六角ナット）・ISO 7089（平座金）の呼び寸法を目安にした簡単な形（ねじ山・面取りなし）。ナットの穴は呼び径と同じにしている",
+  "finish": {
+    "zinc": {"note": "亜鉛めっき（銀色）", "color": [0.62, 0.63, 0.65], "metallic": 1.0, "roughness": 0.35},
+    "black": {"note": "黒染め", "color": [0.04, 0.04, 0.045], "metallic": 0.6, "roughness": 0.5}
+  },
+  "parts": [
+    {"name": "bolt_M4x12", "kind": "bolt", "d": 4.0, "length": 12.0, "head_across_flats": 7.0, "head_height": 2.8, "finish": "zinc"},
+    {"name": "bolt_M6x30", "kind": "bolt", "d": 6.0, "length": 30.0, "head_across_flats": 10.0, "head_height": 4.0, "finish": "zinc"},
+    {"name": "bolt_M8x40", "kind": "bolt", "d": 8.0, "length": 40.0, "head_across_flats": 13.0, "head_height": 5.3, "finish": "zinc"},
+    {"name": "nut_M4", "kind": "nut", "d": 4.0, "across_flats": 7.0, "height": 3.2, "finish": "zinc"},
+    {"name": "nut_M6", "kind": "nut", "d": 6.0, "across_flats": 10.0, "height": 5.2, "finish": "zinc"},
+    {"name": "nut_M8", "kind": "nut", "d": 8.0, "across_flats": 13.0, "height": 6.8, "finish": "zinc"},
+    {"name": "washer_M4", "kind": "washer", "d_inner": 4.3, "d_outer": 9.0, "thickness": 0.8, "finish": "zinc"},
+    {"name": "washer_M6", "kind": "washer", "d_inner": 6.4, "d_outer": 12.0, "thickness": 1.6, "finish": "zinc"},
+    {"name": "washer_M8", "kind": "washer", "d_inner": 8.4, "d_outer": 16.0, "thickness": 1.6, "finish": "zinc"}
+  ],
+  "marker": {
+    "name": "aruco_4x4_50_id0_50mm",
+    "dict": "4x4_50",
+    "id": 0,
+    "marker_mm": 50.0,
+    "margin_mm": 10.0,
+    "board_thickness": 0.5,
+    "note": "数えて測るツールの pixi run marker と同じ種類・大きさ（黒い四角の 1 辺 50mm、周りに白い余白 10mm）"
+  },
+  "physics": {
+    "density_g_per_cm3": 7.85,
+    "static_friction": 0.5,
+    "dynamic_friction": 0.4,
+    "restitution": 0.1,
+    "note": "鋼の密度と、紙の上の金属くらいの摩擦の目安。転がり方は実物で確かめていない"
+  }
+}

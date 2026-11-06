@@ -1,0 +1,233 @@
+<?xml version="1.0"?>
+<!--
+  双腕の外観検査セル（自作の簡単な形。既存の製品の形はまねていない）
+  - 胴体（箱）+ 6 軸の腕 2 本。左手はグリッパ（指 2 本）、右手は手首カメラ（リング照明つき）
+  - 腕の寸法と関節の上下限は dual_arm_inspection/kinematics.py・cell.py と同じ（test_urdf.py で照合する）
+  - 長さは m。world の原点はロボットの足もとの床、x が前、y が左、z が上
+  - with_cell:=false で、机・トレイ・照明を外す（Isaac Sim に読み込むとき用）
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="dual_arm_inspection_cell">
+  <xacro:arg name="with_cell" default="true"/>
+  <xacro:property name="PI" value="3.141592653589793"/>
+
+  <!-- 腕の寸法（kinematics.ArmGeometry） -->
+  <xacro:property name="d1" value="0.10"/>
+  <xacro:property name="a2" value="0.32"/>
+  <xacro:property name="d4a" value="0.12"/>
+  <xacro:property name="d4b" value="0.20"/>
+  <xacro:property name="d6a" value="0.05"/>
+  <xacro:property name="left_tool" value="0.085"/>
+  <xacro:property name="right_tool" value="0.05"/>
+  <xacro:property name="vel" value="1.5"/>
+
+  <material name="steel"><color rgba="0.82 0.83 0.85 1"/></material>
+  <material name="joint_gray"><color rgba="0.25 0.27 0.30 1"/></material>
+  <material name="body"><color rgba="0.35 0.38 0.42 1"/></material>
+  <material name="black"><color rgba="0.08 0.08 0.09 1"/></material>
+  <material name="camera_blue"><color rgba="0.15 0.25 0.45 1"/></material>
+  <material name="lamp"><color rgba="1.0 0.95 0.80 1"/></material>
+  <material name="wood"><color rgba="0.76 0.66 0.50 1"/></material>
+  <material name="tray"><color rgba="0.20 0.33 0.45 1"/></material>
+  <material name="frame"><color rgba="0.55 0.56 0.58 1"/></material>
+
+  <xacro:macro name="inertia" params="m">
+    <inertial>
+      <mass value="${m}"/>
+      <inertia ixx="${0.002*m}" ixy="0" ixz="0" iyy="${0.002*m}" iyz="0" izz="${0.002*m}"/>
+    </inertial>
+  </xacro:macro>
+
+  <!-- 円柱（向き: z に沿う / y に沿う） -->
+  <xacro:macro name="cyl_z" params="r l z mat">
+    <visual>
+      <origin xyz="0 0 ${z}" rpy="0 0 0"/>
+      <geometry><cylinder radius="${r}" length="${l}"/></geometry>
+      <material name="${mat}"/>
+    </visual>
+  </xacro:macro>
+  <xacro:macro name="cyl_y" params="r l mat">
+    <visual>
+      <origin xyz="0 0 0" rpy="${PI/2} 0 0"/>
+      <geometry><cylinder radius="${r}" length="${l}"/></geometry>
+      <material name="${mat}"/>
+    </visual>
+  </xacro:macro>
+  <xacro:macro name="box_at" params="x y z sx sy sz mat">
+    <visual>
+      <origin xyz="${x} ${y} ${z}" rpy="0 0 0"/>
+      <geometry><box size="${sx} ${sy} ${sz}"/></geometry>
+      <material name="${mat}"/>
+    </visual>
+  </xacro:macro>
+
+  <!-- 6 軸の腕。関節 n の上下限は lo{n} / hi{n}（kinematics.LOWER / UPPER） -->
+  <xacro:macro name="arm" params="p x y z">
+    <link name="${p}_base">
+      <xacro:cyl_z r="0.065" l="0.012" z="0.006" mat="joint_gray"/>
+    </link>
+    <joint name="${p}_base_joint" type="fixed">
+      <parent link="torso_link"/><child link="${p}_base"/>
+      <origin xyz="${x} ${y} ${z}" rpy="0 0 0"/>
+    </joint>
+
+    <link name="${p}_link1">
+      <xacro:cyl_z r="0.055" l="${d1}" z="${d1/2}" mat="joint_gray"/>
+      <xacro:inertia m="2.0"/>
+    </link>
+    <joint name="${p}_joint1" type="revolute">
+      <parent link="${p}_base"/><child link="${p}_link1"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/><axis xyz="0 0 1"/>
+      <limit lower="-2.8" upper="2.8" effort="80" velocity="${vel}"/>
+    </joint>
+
+    <link name="${p}_link2">
+      <xacro:cyl_y r="0.055" l="0.12" mat="joint_gray"/>
+      <xacro:cyl_z r="0.045" l="${a2}" z="${a2/2}" mat="steel"/>
+      <xacro:inertia m="2.0"/>
+    </link>
+    <joint name="${p}_joint2" type="revolute">
+      <parent link="${p}_link1"/><child link="${p}_link2"/>
+      <origin xyz="0 0 ${d1}" rpy="0 0 0"/><axis xyz="0 1 0"/>
+      <limit lower="-1.2" upper="2.2" effort="80" velocity="${vel}"/>
+    </joint>
+
+    <link name="${p}_link3">
+      <xacro:cyl_y r="0.05" l="0.11" mat="joint_gray"/>
+      <xacro:cyl_z r="0.04" l="${d4a}" z="${d4a/2}" mat="steel"/>
+      <xacro:inertia m="1.2"/>
+    </link>
+    <joint name="${p}_joint3" type="revolute">
+      <parent link="${p}_link2"/><child link="${p}_link3"/>
+      <origin xyz="0 0 ${a2}" rpy="0 0 0"/><axis xyz="0 1 0"/>
+      <limit lower="0.05" upper="2.7" effort="50" velocity="${vel}"/>
+    </joint>
+
+    <link name="${p}_link4">
+      <xacro:cyl_z r="0.038" l="${d4b}" z="${d4b/2}" mat="steel"/>
+      <xacro:inertia m="0.8"/>
+    </link>
+    <joint name="${p}_joint4" type="revolute">
+      <parent link="${p}_link3"/><child link="${p}_link4"/>
+      <origin xyz="0 0 ${d4a}" rpy="0 0 0"/><axis xyz="0 0 1"/>
+      <limit lower="-2.9" upper="2.9" effort="20" velocity="${vel}"/>
+    </joint>
+
+    <link name="${p}_link5">
+      <xacro:cyl_y r="0.035" l="0.08" mat="joint_gray"/>
+      <xacro:cyl_z r="0.03" l="${d6a}" z="${d6a/2}" mat="steel"/>
+      <xacro:inertia m="0.4"/>
+    </link>
+    <joint name="${p}_joint5" type="revolute">
+      <parent link="${p}_link4"/><child link="${p}_link5"/>
+      <origin xyz="0 0 ${d4b}" rpy="0 0 0"/><axis xyz="0 1 0"/>
+      <limit lower="-2.1" upper="2.1" effort="20" velocity="${vel}"/>
+    </joint>
+
+    <link name="${p}_link6">
+      <xacro:cyl_z r="0.032" l="0.02" z="0.01" mat="joint_gray"/>
+      <xacro:inertia m="0.2"/>
+    </link>
+    <joint name="${p}_joint6" type="revolute">
+      <parent link="${p}_link5"/><child link="${p}_link6"/>
+      <origin xyz="0 0 ${d6a}" rpy="0 0 0"/><axis xyz="0 0 1"/>
+      <limit lower="-2.9" upper="2.9" effort="10" velocity="${vel}"/>
+    </joint>
+  </xacro:macro>
+
+  <!-- ===== 床と胴体 ===== -->
+  <link name="world"/>
+  <link name="torso_link">
+    <xacro:box_at x="-0.06" y="0" z="0.01" sx="0.42" sy="0.52" sz="0.02" mat="joint_gray"/>
+    <xacro:box_at x="-0.06" y="0" z="0.475" sx="0.26" sy="0.40" sz="0.95" mat="body"/>
+    <xacro:box_at x="0.02" y="0" z="1.00" sx="0.16" sy="0.56" sz="0.10" mat="body"/>
+  </link>
+  <joint name="torso_joint" type="fixed">
+    <parent link="world"/><child link="torso_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <xacro:arm p="l" x="0.06" y="0.21" z="1.05"/>
+  <xacro:arm p="r" x="0.06" y="-0.21" z="1.05"/>
+
+  <!-- ===== 左手: グリッパ（指は y の向きに開く。l_tcp は指先より 2.5cm 内側） ===== -->
+  <link name="l_palm">
+    <xacro:box_at x="0" y="0" z="0.015" sx="0.05" sy="0.075" sz="0.03" mat="black"/>
+    <xacro:inertia m="0.3"/>
+  </link>
+  <joint name="l_palm_joint" type="fixed">
+    <parent link="l_link6"/><child link="l_palm"/>
+    <origin xyz="0 0 0.02" rpy="0 0 0"/>
+  </joint>
+  <link name="l_finger_a">
+    <xacro:box_at x="0" y="0.004" z="0.03" sx="0.008" sy="0.008" sz="0.06" mat="black"/>
+    <xacro:inertia m="0.05"/>
+  </link>
+  <joint name="l_finger_a_joint" type="prismatic">
+    <parent link="l_palm"/><child link="l_finger_a"/>
+    <origin xyz="0 0 0.03" rpy="0 0 0"/><axis xyz="0 1 0"/>
+    <limit lower="0.0" upper="0.025" effort="20" velocity="0.1"/>
+  </joint>
+  <link name="l_finger_b">
+    <xacro:box_at x="0" y="-0.004" z="0.03" sx="0.008" sy="0.008" sz="0.06" mat="black"/>
+    <xacro:inertia m="0.05"/>
+  </link>
+  <joint name="l_finger_b_joint" type="prismatic">
+    <parent link="l_palm"/><child link="l_finger_b"/>
+    <origin xyz="0 0 0.03" rpy="0 0 0"/><axis xyz="0 -1 0"/>
+    <limit lower="0.0" upper="0.025" effort="20" velocity="0.1"/>
+  </joint>
+  <link name="l_tcp"/>
+  <joint name="l_tcp_joint" type="fixed">
+    <parent link="l_link6"/><child link="l_tcp"/>
+    <origin xyz="0 0 ${left_tool}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ===== 右手: 手首カメラ（z が見る向き。光学座標: x 右・y 下・z 前） ===== -->
+  <link name="r_camera_link">
+    <xacro:box_at x="0" y="0" z="0.015" sx="0.045" sy="0.045" sz="0.03" mat="camera_blue"/>
+    <xacro:cyl_z r="0.03" l="0.005" z="0.0275" mat="lamp"/>
+    <xacro:cyl_z r="0.012" l="0.02" z="0.04" mat="black"/>
+    <xacro:inertia m="0.2"/>
+  </link>
+  <joint name="r_camera_joint" type="fixed">
+    <parent link="r_link6"/><child link="r_camera_link"/>
+    <origin xyz="0 0 0.02" rpy="0 0 0"/>
+  </joint>
+  <link name="r_camera_optical_frame"/>
+  <joint name="r_camera_optical_joint" type="fixed">
+    <parent link="r_link6"/><child link="r_camera_optical_frame"/>
+    <origin xyz="0 0 ${right_tool}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ===== セル: 机・部品トレイ・照明 ===== -->
+  <xacro:if value="$(arg with_cell)">
+    <link name="table_link">
+      <xacro:box_at x="0.55" y="0" z="0.73" sx="0.70" sy="1.00" sz="0.04" mat="wood"/>
+      <visual><origin xyz="0.86 0.46 0.355"/><geometry><cylinder radius="0.02" length="0.71"/></geometry><material name="frame"/></visual>
+      <visual><origin xyz="0.86 -0.46 0.355"/><geometry><cylinder radius="0.02" length="0.71"/></geometry><material name="frame"/></visual>
+      <visual><origin xyz="0.24 0.46 0.355"/><geometry><cylinder radius="0.02" length="0.71"/></geometry><material name="frame"/></visual>
+      <visual><origin xyz="0.24 -0.46 0.355"/><geometry><cylinder radius="0.02" length="0.71"/></geometry><material name="frame"/></visual>
+    </link>
+    <joint name="table_joint" type="fixed">
+      <parent link="world"/><child link="table_link"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+    <link name="tray_link">
+      <xacro:box_at x="0.44" y="0" z="0.76" sx="0.21" sy="0.21" sz="0.02" mat="tray"/>
+    </link>
+    <joint name="tray_joint" type="fixed">
+      <parent link="world"/><child link="tray_link"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+    <link name="light_link">
+      <!-- 机の左奥に柱を立て、腕が届かない高さ（1.68m より上）から照らす。cell.LIGHT_BOXES と同じ -->
+      <xacro:box_at x="0.62" y="0.47" z="1.225" sx="0.03" sy="0.03" sz="0.95" mat="frame"/>
+      <xacro:box_at x="0.62" y="0.33" z="1.715" sx="0.03" sy="0.31" sz="0.03" mat="frame"/>
+      <xacro:box_at x="0.62" y="0.20" z="1.69" sx="0.16" sy="0.16" sz="0.02" mat="lamp"/>
+    </link>
+    <joint name="light_joint" type="fixed">
+      <parent link="world"/><child link="light_link"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+  </xacro:if>
+</robot>

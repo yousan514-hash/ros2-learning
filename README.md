@@ -98,6 +98,32 @@ pixi run cmd /c "call install\local_setup.bat && ros2 run robot_ledger ledger_bi
 
 まだないもの: 何社もで台帳を持ち合う仕組み（合意）、公開のブロックチェーンへの記録、受け取る側（工場）の署名、支払い。
 
+### 双腕の外観検査セル（dual_arm_inspection）
+
+**左腕が部品を持って見せ、右腕の手首カメラで面を順に撮り、OK／NG／保留の 3 段で判定する**シミュレーション。ロボットは自作の簡単な形（胴体 + 6 軸の腕 2 本、逆運動学は式で解く）。部品は synthetic-testbench と同じボルト・ナット・座金（9 個、27 面）。
+
+```powershell
+pixi run build
+pixi run dual_arm          # robot_state_publisher + セルの動き + 疑似カメラ + 検査 + RViz
+pixi run check_dual_arm    # GUI なしで確かめる（逆運動学・腕どうしの距離・検査の当たり外れ）→ docs/dual_arm_inspection.png
+pixi run test_dual_arm     # pytest
+```
+
+<img src="docs/dual_arm_rviz.png" width="640" alt="RViz: 左腕がボルトを右腕のカメラの前に出し、判定（OK・緑）と手首カメラの画像が出ているところ">
+
+| ノード | すること |
+|---|---|
+| `cell_node` | 決めた順番（トレイの上の面を撮る → 取る → カメラの前に出す → 面を変える → 戻す）を逆運動学で関節角にし、`/joint_states` を 30Hz で出す。部品の TF は持っている間 `l_tcp` の子になる |
+| `camera_node` | 撮る合図ごとに、部品の面の画像を OpenCV で作る（傷・打痕・汚れ、照明のばらつき、ときどき範囲外の照明）。`sensor_msgs/Image`（rgb8）を自分で詰める |
+| `inspector_node` | 起動時に**良品の画像だけで**「ふつうの見え方」としきい値を学び、OK（自動で通す）／NG（自動で弾く）／保留（人に回す）で判定。明るさや背景が学んだ範囲から外れたら、点数に関係なく保留（範囲外の見張り） |
+
+結果（2026-11-06、`check_dual_arm`）:
+- 逆運動学: 動きの目標 65 個すべて解けて上下限の中（手先の誤差 最大 1e-15）。でたらめな関節角 2000 通り × 2 腕の解き直しも全部戻った
+- 1 周 195 秒を 50Hz で刻んだ 9,746 点: 上下限の外 0、腕どうしの最短 0.052 m（下限 0.03 m）、机・胴体・照明との最短 0.050 m
+- 検査（疑似画像 200 枚）: 良品 143 → OK 142・保留 1 ／ 不良 50 → NG 49・OK 1（見逃し: 強さ 0.00 のごく薄い傷）／ 範囲外 7 → すべて保留
+
+数値は自作の疑似画像での結果で、欠陥の強さや照明の仮定で変わる（実物では未検証）。Isaac Sim で同じ姿勢を撮る下書きは [`src/dual_arm_inspection/isaac`](src/dual_arm_inspection/isaac/README.md)。
+
 確認用のコマンド:
 
 ```powershell
@@ -112,6 +138,8 @@ pixi run ros2 topic hz /topic   # 約 2Hz
 |---|---|
 | [`src/py_pubsub`](src/py_pubsub) | Python のパブリッシャー・サブスクライバー、サービス、パラメータ、launch、tf2、rosbag2、アクション（公式チュートリアル）と、亀に字を書かせるノード |
 | [`src/robot_ledger`](src/robot_ledger) | ロボットの稼働を署名つきの台帳に記録し、使用範囲の中の仕事だけを数えて請求額を出す（ロボット × ブロックチェーンの練習） |
+| [`src/dual_arm_inspection`](src/dual_arm_inspection) | 双腕の外観検査セル（xacro・逆運動学・動きの計画・疑似カメラ・3 段判定・RViz の設定・Isaac Sim の下書き） |
+| [`tools/check_dual_arm.py`](tools/check_dual_arm.py) | 双腕セルを GUI なしで確かめ、1 枚の絵にまとめる |
 | [`tools/vcrt_local.py`](tools/vcrt_local.py) | Windows の Visual C++ ランタイムが古いとき、新しいランタイムを C++ の exe の隣に置く（管理者権限なし） |
 | [`tools/check_turtle_draw.py`](tools/check_turtle_draw.py) | 亀を動かす制御を、turtlesim と同じ動きの式で確かめる |
 | [`pixi.toml`](pixi.toml) | 環境と実行コマンドの定義 |
@@ -138,6 +166,8 @@ pixi run ros2 topic hz /topic   # 約 2Hz
 - [x] アクション: 時間のかかる仕事を頼み、途中経過を受け取り、取り消す
 - [x] turtlesim で移動ロボットを動かす（亀に「F」の字を描かせる。位置を見ながら速度を決める P 制御）
 - [x] ロボット × ブロックチェーン: 稼働を署名つきの台帳に記録し、働いた分だけ請求する（robot_ledger）
+- [x] 双腕の外観検査セル: xacro のロボット・逆運動学・RViz・疑似カメラ・3 段判定（dual_arm_inspection）
+- [ ] 双腕セルを Isaac Sim で撮る（下書きまで。`src/dual_arm_inspection/isaac`）
 - [ ] 台帳を Isaac Sim のロボット（Franka）にもつなぐ
 - [ ] Isaac Sim × ROS 2（公式の `IsaacSim-ros_workspaces` に移る）
 - [ ] Isaac Lab で強化学習

@@ -12,3 +12,6 @@ bags/
 # robot_ledger の台帳と鍵（秘密鍵は絶対に上げない）
 ledger/
 *.key
+
+# Isaac Sim に渡すファイル・撮った画像（pixi run dual_arm_urdf と capture_inspection.py が作る）
+src/dual_arm_inspection/isaac/out/

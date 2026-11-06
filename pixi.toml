@@ -16,6 +16,13 @@ turtlesim = { cmd = "ros2 run turtlesim turtlesim_node", depends-on = ["vcrt_loc
 turtle_draw = "cmd /c \"call install\\local_setup.bat && ros2 run py_pubsub turtle_draw\""
 # turtlesim を起動せずに、turtle_draw の制御を同じ動きの式で確かめる
 check_turtle_draw = "python tools/check_turtle_draw.py"
+# 双腕の外観検査セル（src/dual_arm_inspection）。RViz で動きと判定を見る。先に pixi run build
+dual_arm = { cmd = "cmd /c \"call install\\local_setup.bat && ros2 launch dual_arm_inspection dual_arm_inspection.launch.py\"", depends-on = ["vcrt_local"] }
+# GUI なしで確かめる: 逆運動学・上下限・腕どうしの距離・検査の当たり外れ（200 枚）→ docs/dual_arm_inspection.png
+check_dual_arm = "python tools/check_dual_arm.py"
+test_dual_arm = "python -m pytest src/dual_arm_inspection/test -q"
+# Isaac Sim に読み込む URDF を作る（机などを外した版）→ src/dual_arm_inspection/isaac/out/dual_arm.urdf
+dual_arm_urdf = "python src/dual_arm_inspection/isaac/export_urdf.py"
 
 [activation.env]
 # 日本語を含むファイルや環境変数を、colcon が cp932 で読んで落ちるのを防ぐ
@@ -29,3 +36,7 @@ ros-jazzy-demo-nodes-cpp = "*"
 ros-jazzy-demo-nodes-py = "*"
 colcon-common-extensions = "*"
 setuptools = "<=79.0.1"
+ros-jazzy-rviz2 = ">=14.1.24,<15"
+ros-jazzy-xacro = ">=2.1.1,<3"
+ros-jazzy-joint-state-publisher = ">=2.4.3,<3"
+opencv = ">=5.0.0,<6"
