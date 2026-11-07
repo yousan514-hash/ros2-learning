@@ -233,3 +233,15 @@ C++ のノードは Visual C++ ランタイムの更新待ちなので、Python 
 - **双腕は、止まった姿勢だけでなく「動いている途中」の距離も確かめる。** 今の計画では両腕が同時に動く区間が 18 あり、途中の点まで含めてすべて下限を超えていた（近づきすぎたときに片腕ずつに切り替える仕組みは入れたが、今の計画では一度も使われていない）
 - **3 段判定のしきい値は、学びに使っていない良品で決める。** 学びに使った画像で決めると、本番より甘く見える
 - 撮り方（照明・カメラ）が変わったら、学び直しが要る。Isaac Sim の画像を判定するときも、Isaac Sim の良品で学び直す（`isaac/judge_folder.py`）
+
+## 2026-11-07 — WSL2 の Ubuntu 22.04 に ROS 2 Humble を入れた
+現場の案件や OSS（OM1-sim）・peaq の SDK は「Ubuntu 22.04 ＋ Humble」が前提なので、Windows の Jazzy（pixi）とは別に Linux の環境を用意した。
+
+- WSL 3.0.3（公式の MSI）＋ Ubuntu 22.04.5（WSL2）。ROS 2 は [`tools/wsl_setup_humble.sh`](tools/wsl_setup_humble.sh) で公式の手順どおりに入れた（`ros-humble-desktop`・`ros-dev-tools`・rosdep）。Windows から root で動かすので、sudo のパスワードは要らない
+- 確かめたこと: `demo_nodes_cpp talker` → `ros2 topic echo --once /chatter` で `Hello World: 1`。turtlesim の窓が WSLg で Windows の画面に出た（窓の名前 `TurtleSim (Ubuntu-22.04)`）
+
+### 詰まったこと
+- **BIOS の仮想化が「オフ」に見えた。** `Win32_Processor.VirtualizationFirmwareEnabled` が False だったが、メモリ整合性（VBS）がハイパーバイザーで動いていると、この値は False と表示される。`Win32_DeviceGuard` の `VirtualizationBasedSecurityStatus` が 2（動作中）なら、仮想化はオン。BIOS は触らなくてよかった
+- **`wsl --install` が `Wsl/CallMsi/Install/REGDB_E_CLASSNOTREG` で止まった。** ストア版の WSL が中途半端に入った状態。GitHub の公式の配布（`wsl.3.0.3.0.x64.msi`）を入れ直したら通った
+- **Ubuntu が管理者のアカウントの側に入った。** 普段のアカウントは一般ユーザーなので、「ターミナル（管理者）」は管理者のアカウントとして動く。Ubuntu（ディストリビューション）はアカウントごとに入るので、管理者側を `wsl --unregister` で消し、普段のアカウントで `wsl --install -d Ubuntu-22.04 --no-launch` から入れ直した（WSL 本体が入っていれば管理者は要らない）
+- パスワードの入力は画面に何も出ない（文字も●も）。打ち終えたら Enter でよい

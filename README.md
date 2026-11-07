@@ -6,6 +6,16 @@ ROS 2 Jazzy を **Windows 11 にネイティブで** 入れて学ぶ記録です
 
 > この方法を選んだ理由: Isaac Sim 6 の公式手順でも、Windows では pixi で入れる ROS 2 Jazzy が使われていて、WSL2 は非推奨になっている（[Isaac Sim: ROS 2 Installation](https://docs.isaacsim.omniverse.nvidia.com/latest/installation/install_ros.html)）。
 
+## 見どころ
+
+![双腕の外観検査セルを RViz で動かしているところ](docs/dual_arm_rviz.png)
+
+| 作ったもの | 中身 | 確かめた数字 |
+|---|---|---|
+| [双腕の外観検査セル](src/dual_arm_inspection) | 自作の 6 軸 × 2 の腕。左手が部品を持ち、右手の手首カメラで面ごとに撮って、良品だけで学ぶ 3 段判定（OK／NG／保留）にかける。RViz で動きと判定を見る | 動きの目標 65 点すべてで逆運動学が上下限の中で解けた／1 周 9,746 点で腕どうしの距離は最短 5.2 cm／疑似画像 200 枚で見逃し 2%・過検出 0%・範囲外の照明はすべて保留 |
+| [稼働台帳 robot_ledger](src/robot_ledger) | ロボットの稼働を Ed25519 の署名とハッシュの鎖で記録し、使用範囲の中の仕事だけを数えて請求額を出す | テスト 12 件（改ざん・別の鍵で作った偽の台帳を見抜く） |
+| Windows ＋ Linux の環境 | Windows ネイティブの Jazzy（pixi）と、WSL2 の Ubuntu 22.04 ＋ Humble（[`tools/wsl_setup_humble.sh`](tools/wsl_setup_humble.sh)） | 詰まったことを原因から解決した記録（[LOG.md](LOG.md)） |
+
 ## 環境
 
 | 項目 | 内容 |
@@ -15,6 +25,7 @@ ROS 2 Jazzy を **Windows 11 にネイティブで** 入れて学ぶ記録です
 | パッケージ管理 | pixi 0.81.0 |
 | Python | 3.12 |
 | GPU | RTX 4070（12GB） |
+| Linux | WSL2 の Ubuntu 22.04 ＋ ROS 2 Humble（現場や OSS でよく使われる組み合わせ。2026-11-07 から） |
 
 ## 使い方
 

@@ -1,0 +1,2 @@
+# シェルのスクリプトは Linux（WSL）で動かすので、Windows でも改行を LF のままにする
+*.sh text eol=lf
