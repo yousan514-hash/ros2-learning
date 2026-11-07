@@ -15,8 +15,6 @@ from __future__ import annotations
 import json
 
 import numpy as np
-import rclpy
-from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
@@ -57,16 +55,7 @@ class CameraNode(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = CameraNode()
-    try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    RU.spin(CameraNode, args)
 
 
 if __name__ == "__main__":

@@ -17,6 +17,8 @@ setup(
         ("share/" + package_name + "/config", glob("config/*.json")),
     ],
     install_requires=["setuptools"],
+    # colcon test が pytest でテストを集めるための印（無いと unittest で探して 0 件になる）
+    extras_require={"test": ["pytest"]},
     zip_safe=True,
     maintainer="Y.Fujita",
     description="双腕の外観検査セル: 持つ腕と見る腕の協調、疑似カメラ、3 段判定（OK／NG／保留）",

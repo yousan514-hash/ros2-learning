@@ -204,6 +204,47 @@ pixi run cmd /c "call install\local_setup.bat && ros2 run robot_ledger inspectio
 
 公式の資料に書かれていない所（封筒の `createdAt` の形式、`robotId` に DID の代わりに台帳の ID を入れた、`dataCid` は手元で計算した仮）は、[`peaq_format.py`](src/robot_ledger/robot_ledger/peaq_format.py) の先頭に書いた。
 
+## Linux（Ubuntu 22.04 ＋ Humble）での動かし方
+
+同じ 3 つのパッケージ（py_pubsub・robot_ledger・dual_arm_inspection）を、WSL2 の Ubuntu 22.04 ＋ ROS 2 Humble でもビルド・テスト・起動できる（2026-11-07 に確かめた）。ROS 2 の入れ方は [`tools/wsl_setup_humble.sh`](tools/wsl_setup_humble.sh)。Windows の Jazzy（pixi）と Linux の Humble で、同じソースが動く。
+
+```bash
+# Windows のフォルダ（/mnt/c）の上でビルドすると遅く、Windows 側のビルドの成果物ともまざるので、Linux のホームに置く
+mkdir -p ~/ws && cd ~/ws
+git clone https://github.com/yousan514-hash/ros2-learning.git
+cd ros2-learning
+source /opt/ros/humble/setup.bash
+
+# 足りない依存を調べる（--simulate は見るだけ）→ 入れる（sudo の apt が動く）
+rosdep install --from-paths src --ignore-src -y --simulate
+rosdep install --from-paths src --ignore-src -y
+
+colcon build --symlink-install
+colcon test && colcon test-result --verbose
+source install/setup.bash
+
+ros2 run py_pubsub talker                # 別のターミナルで ros2 run py_pubsub listener
+ros2 run turtlesim turtlesim_node        # 別のターミナルで ros2 run py_pubsub turtle_draw（窓は WSLg で Windows の画面に出る）
+ros2 launch dual_arm_inspection dual_arm_inspection.launch.py   # RViz つき（xacro が要る）
+```
+
+Ubuntu 22.04 ＋ `ros-humble-desktop` ＋ `ros-dev-tools` に足りなかったのは `ros-humble-xacro` だけ（rosdep で確かめた）。
+
+| パッケージ | ビルド | テスト（`colcon test`） | 動かした結果 |
+|---|---|---|---|
+| py_pubsub | 通った | テストなし | talker → listener で 11 件出して 11 件受け取った。launch でも受け取れた。turtle_draw は「F」の 5 点を誤差 0.050 以下でたどり、16.4 秒で終わった |
+| robot_ledger | 通った | 12 件合格 | （ノードは動かしていない） |
+| dual_arm_inspection | 通った | 28 件のうち 23 件合格・5 件飛ばし（xacro が要る 4 件・隣のリポジトリ synthetic-testbench が要る 1 件）。xacro を一時的に用意すると、その 4 件も合格 | ノード 5 つ（RViz を含む）が起動し、`/joint_states` は約 30 Hz。40 秒で 5 枚撮って 5 枚判定。RViz の警告・エラーなし。止めたあと Traceback なし |
+
+Linux で動かして見つけて、直したこと（どれも Windows の pixi でもビルドとテストが通る形）:
+
+| 症状 | 原因 | 直し方 |
+|---|---|---|
+| `colcon test` が 0 件 | setup.py にテストの依存（pytest）がなく、colcon が unittest で探していた（Windows では pytest を直接呼んでいたので気づかなかった） | setup.py に `extras_require={"test": ["pytest"]}`（ROS 2 の新しいひな形と同じ書き方） |
+| xacro が無いと、dual_arm_inspection のテストが全部 0 件 | Humble の launch_testing の pytest プラグインは、テストを集めるときにファイルを import する。test_urdf.py の先頭の `pytest.importorskip` が、そこでフォルダ全体の集めを止めた | `ImportError` を受けて、`pytest.mark.skipif` でそのファイルだけ飛ばす |
+| Ctrl+C で止めると、自作の 3 つのノードが `KeyboardInterrupt` の Traceback を出して落ちる | SIGINT が端末と launch の両方から 2 回届き、Humble の rclpy では 2 回目が `destroy_node()` の途中で `KeyboardInterrupt` になる | 止め方を `ros_utils.spin()` にまとめ、後片づけの中の 2 回目は無視する |
+| 1 枚目の判定が出ない | 検査ノードが良品から学ぶのに 6.3 秒かかり、その前にセルが撮っていた（PC の速さで変わる起動の順番の問題） | セルは、検査ノードの準備ができるまで最初の姿勢で待つ（最大 30 秒。パラメータ `wait_inspector`） |
+
 ## 中身
 
 | パス | 内容 |

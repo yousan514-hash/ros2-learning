@@ -11,6 +11,8 @@ setup(
         ("share/" + package_name, ["package.xml"]),
     ],
     install_requires=["setuptools"],
+    # colcon test が pytest でテストを集めるための印（無いと unittest で探して 0 件になる）
+    extras_require={"test": ["pytest"]},
     zip_safe=True,
     maintainer="Y.Fujita",
     description="ロボットの稼働を署名つきの台帳に記録し、使用範囲の中の仕事だけを数えて請求額を出す",

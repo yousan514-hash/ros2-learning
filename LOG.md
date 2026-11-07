@@ -322,6 +322,50 @@ RViz で動かした双腕の外観検査セルと同じ関節角で、Isaac Sim
 - 台帳の指紋（台帳全体の封筒）をテストネット agung に刻む（承認が要る: WSL2 の Ubuntu に peaq の SDK、ウォレット、faucet）
 - 結: 使用範囲書と受け取り・申し立てを、スマートコントラクトの条件（エスクロー: 受け取りで払う・期限の中の申し立てで減らす）として書く
 
+## 2026-11-07 — Windows（Jazzy）で作ったパッケージを、Linux（Ubuntu 22.04 ＋ Humble）でも動かした（ロボ子）
+
+### ねらい
+Windows の pixi（Jazzy）で作ってきた 3 つのパッケージ（py_pubsub・robot_ledger・dual_arm_inspection）が、現場や OSS でよく使われる Ubuntu 22.04 ＋ Humble でも、ビルド・テスト・起動できるかを確かめる。動かないところは、両方で動く形に直す。
+
+### やったこと
+- Windows のリポジトリを WSL のホーム（`~/ws/ros2-learning`）に `git clone` した（`/mnt/c` の上でビルドすると遅く、Windows 側のビルドの成果物ともまざる）
+- `rosdep install --from-paths src --ignore-src -y --simulate` → 足りないのは `ros-humble-xacro` だけ。apt では入れていない（sudo が要るので承認待ち）
+- `colcon build --symlink-install` → `colcon test` → `colcon test-result --verbose`
+- 動かした: talker／listener、`pubsub.launch.py`、turtlesim ＋ turtle_draw（窓は WSLg）、dual_arm_inspection の launch（RViz つき）
+- 直したあと、Windows でも `pixi run build`（3 つとも通った）と `pixi run test_dual_arm`（28 件すべて合格）を実行した。dual_arm の launch（RViz なし）も Windows で動かし、`/inspection/result` に判定（`verdict: OK`）が出るのを確かめた
+
+### 結果（Linux）
+| パッケージ | ビルド | テスト | 動かした結果 |
+|---|---|---|---|
+| py_pubsub | 通った | テストなし | talker → listener で 11 件出して 11 件受け取った。launch で 9 件受け取った。turtle_draw は「F」の 5 点を誤差 0.047〜0.050 でたどり、16.4 秒で終わった（最後の位置 x=6.45, y=5.50） |
+| robot_ledger | 通った | 12 件合格 | ノードは動かしていない |
+| dual_arm_inspection | 通った | 28 件のうち 23 件合格・5 件飛ばし（xacro 4 件・synthetic-testbench 1 件） | ノード 5 つ（robot_state_publisher・セル・カメラ・検査・RViz）が起動。`/joint_states` 約 30 Hz。40 秒で 5 枚撮って 5 枚判定（直す前は 1 枚目が消えていた）。RViz の警告・エラーなし。止めたあと Traceback 0 |
+
+- `colcon test` の合計: 40 件、失敗 0、飛ばし 5（直す前は 0 件）
+- 千恵が作業中の robot_ledger（Windows 側の 23 時台のファイル）も、別のフォルダで Humble でビルド・テストしてみた → 30 件すべて合格・足りない依存なし（参考。千恵の分はコミットしていない）
+
+### 詰まったこと
+- **`colcon test` が 0 件で「成功」になった。** colcon は setup.py の `tests_require` か `extras_require["test"]` に pytest があるときだけ pytest を使い、無いと unittest で探す（colcon-core 0.21.3 の `has_test_dependency()`）。Windows では `python -m pytest` を直接呼んでいたので気づかなかった。setup.py に `extras_require={"test": ["pytest"]}` を足した
+- **xacro が無いと、dual_arm_inspection のテストが全部 0 件になった。** `test_urdf.py` だけ渡すと飛ばし 1、`test_kinematics.py` だけ渡すと 7 件集まり、2 つを並べて渡すと 0 件、で絞り込んだ。Humble の launch_testing（1.0.15）の pytest プラグインは、テストを集めるときに `find_launch_test_entrypoint()` でファイルを import し、`SyntaxError` しか受け止めない。先頭の `pytest.importorskip("xacro")` の「飛ばす」がそこから外に出て、フォルダ全体の集めを止めていた。`ImportError` を受けて `pytestmark = pytest.mark.skipif(...)` にした
+- **Ctrl+C で止めると、自作の 3 つのノードが `KeyboardInterrupt` の Traceback を出して落ちた（exit code -2）。** 止め方を 2 通りで比べた: `timeout --foreground -s INT`（launch にだけ 1 回）だと 4 つともきれいに終わり、`timeout -s INT`（プロセスのグループ全体にも送る。端末の Ctrl+C と同じで、launch の転送とあわせて 2 回届く）だと 3 つが落ちた。2 回目が `destroy_node()` の途中で `KeyboardInterrupt` になる。止め方を `ros_utils.spin()` にまとめ、後片づけの中の 2 回目は無視するようにした → 2 通りとも Traceback 0。apt の robot_state_publisher（C++）は、2 回届くと exit code -2 になることが 1 回あった（自作の外なのでそのまま）
+- **1 枚目の判定が出なかった。** 検査ノードが良品から学ぶのに 6.3 秒かかり、検査ノードが `/inspection/shot` を受け始める前の 5.4 秒でセルが 1 枚目を撮っていた。Humble と Jazzy の違いではなく、PC の速さで変わる起動の順番の問題。セルは `/inspection/result` の publisher（検査ノードが学び終わってから作る）が見えるまで最初の姿勢で待つようにした（最大 30 秒、パラメータ `wait_inspector`）。待ったのは 3.7 秒で、検査ノードが学び終わった 0.03 秒後に動き出した
+- **xacro を apt で入れられないので、launch と `test_urdf.py` が試せなかった。** 確かめるときだけ、Windows 側の pixi の環境にある xacro 2.1.1（Python だけで書かれている）を `/tmp` に写して `PYTHONPATH` で使い、終わったら消した。`test_urdf.py` は 4 件合格。正式には `sudo apt install ros-humble-xacro`（rosdep でも入る）
+- Windows で launch を外から強制終了すると、ノードのログが出ないまま消えた（バッファに残ったまま終わる）。別のプロセスから `ros2 topic echo --once /inspection/result` で判定を受け取って確かめた
+- Git Bash から `wsl.exe` に `/mnt/c/...` を渡すと、`C:/Users/.../Git/mnt/c/...` に書き換えられた（Git Bash のパス変換）。PowerShell から呼んだ
+- 同じ PC で、ほかの人のデモ（検査セルと台帳）が動いていた。確認ごとに `ROS_DOMAIN_ID`（42〜46）を変えて混ざらないようにし、止めるのは自分のプロセスと、自分が起こした ros2 daemon だけにした
+
+### 学んだこと
+- **「0 件で成功」に気をつける。** `colcon test` は 0 件でも終わりのコードが 0。`colcon test-result` の件数まで見る
+- **Ctrl+C の SIGINT は 1 回とは限らない。** 端末はフォアグラウンドのプロセスのグループ全体に送り、launch も子に送り直す。後片づけは、割り込まれる前提で書く
+- **起動の順番に頼らない。** 相手の準備（publisher が見えるか）を確かめてから動き出す
+- 環境を変えると、隠れていた問題が出る。Windows では xacro があるので `importorskip` が動かず、pytest を直接呼んでいたので colcon の設定の抜けにも気づかなかった
+
+### 次
+- `sudo apt install ros-humble-xacro`（承認が要る）→ Linux でも `test_urdf.py` を合格させ、PYTHONPATH の仮の手を使わずに launch を動かす
+- GitHub Actions で、Ubuntu 22.04 ＋ Humble の `colcon build` と `colcon test` を自動で回す（push は承認が要る）
+- py_pubsub にもテストを足す（turtle_draw の制御は `tools/check_turtle_draw.py` で確かめているので、それを pytest にする）
+- Linux の Humble で MoveIt 2 のチュートリアル（Humble は MoveIt 2 の資料がいちばん多い）
+
 ## 2026-11-07 — 見逃しの曲線と保留の内訳: 疑似画像と Isaac Sim を同じ物差しで比べた（瞳）
 
 ### ねらい

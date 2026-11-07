@@ -9,7 +9,14 @@ from dual_arm_inspection import cell as C
 from dual_arm_inspection.geometry import axis_angle, make_T, rot_angle, rot_rpy
 from dual_arm_inspection.kinematics import JOINTS, LOWER, UPPER
 
-xacro = pytest.importorskip("xacro")
+# xacro が無いときはこのファイルのテストだけを飛ばす。pytest.importorskip を先頭で使うと、
+# Humble の launch_testing の pytest プラグイン（集めるときにファイルを import する）が
+# 「飛ばす」をフォルダ全体に広げ、ほかのテストまで 0 件になる（LOG.md の 2026-11-07）。
+try:
+    import xacro
+except ImportError:
+    xacro = None
+pytestmark = pytest.mark.skipif(xacro is None, reason="xacro が無い（Ubuntu は apt で ros-humble-xacro を入れる）")
 XACRO = Path(__file__).resolve().parents[1] / "urdf" / "dual_arm_cell.urdf.xacro"
 
 

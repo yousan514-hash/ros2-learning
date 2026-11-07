@@ -1,4 +1,4 @@
-"""ROS のメッセージを作る小さな道具（画像の詰め方・Marker）。
+"""ROS の小さな道具（ノードの回し方・画像の詰め方・Marker）。
 
 cv_bridge は入っていないので、sensor_msgs/Image の rgb8 を自分で詰める:
   height, width, encoding="rgb8", is_bigendian=0, step=width*3, data=行ごとに R,G,B の並び
@@ -8,13 +8,38 @@ from __future__ import annotations
 import array
 
 import numpy as np
+import rclpy
 from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import Point, Pose, TransformStamped
+from rclpy.executors import ExternalShutdownException
 from sensor_msgs.msg import Image
 from std_msgs.msg import ColorRGBA
 from visualization_msgs.msg import Marker
 
 from .geometry import quat_xyzw
+
+
+def spin(node_class, args=None) -> None:
+    """ノードを作って回し、Ctrl+C で静かに止める（各ノードの main から呼ぶ）。
+
+    端末で Ctrl+C を押すと、SIGINT が端末と launch の両方から 2 回届く。Humble の rclpy では
+    2 回目が destroy_node() の途中で KeyboardInterrupt になり、Traceback を出して落ちる
+    （WSL2 の Ubuntu 22.04 で確かめた。LOG.md の 2026-11-07）。後片づけの中の 2 回目は無視する。
+    """
+    rclpy.init(args=args)
+    node = None
+    try:
+        node = node_class()
+        rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
+    finally:
+        try:
+            if node is not None:
+                node.destroy_node()
+            rclpy.try_shutdown()
+        except KeyboardInterrupt:
+            pass
 
 
 def image_to_msg(img: np.ndarray, stamp, frame_id: str) -> Image:

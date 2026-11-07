@@ -15,8 +15,6 @@ from __future__ import annotations
 import json
 import time
 
-import rclpy
-from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
@@ -40,6 +38,9 @@ class CellNode(Node):
         self.declare_parameter("loop", True)
         self.declare_parameter("parts", "")
         self.declare_parameter("parts_file", "")
+        # 検査ノードは良品から学ぶのに数秒かかる。その前に撮ると 1 枚目が受け取られずに消えるので、
+        # 検査ノードの準備（/inspection/result の publisher）ができるまで最初の姿勢で待つ（最大この秒数）
+        self.declare_parameter("wait_inspector", 30.0)
         self.speed = float(self.get_parameter("speed").value)
         self.loop = bool(self.get_parameter("loop").value)
         names = [n.strip() for n in str(self.get_parameter("parts").value).split(",") if n.strip()] or None
@@ -63,7 +64,9 @@ class CellNode(Node):
         self.pub_capture = self.create_publisher(String, "/inspection/capture", 10)
         self.pub_markers = self.create_publisher(MarkerArray, "/cell/markers", 10)
         self.tf = TransformBroadcaster(self)
-        self.t_start = time.monotonic()
+        self.wait_inspector = float(self.get_parameter("wait_inspector").value)
+        self.t_created = time.monotonic()
+        self.t_start = None  # 動き出した時刻（検査ノードを待つあいだは None）
         self.prev_t = 0.0
         self.seq = 0
         self.label = ""
@@ -71,7 +74,14 @@ class CellNode(Node):
         self.create_timer(0.5, self.publish_markers)
 
     def tick(self):
-        elapsed = (time.monotonic() - self.t_start) * self.speed
+        if self.t_start is None:
+            ready = self.count_publishers("/inspection/result") > 0
+            waited = time.monotonic() - self.t_created
+            if ready or waited >= self.wait_inspector:
+                self.t_start = time.monotonic()
+                self.get_logger().info(f"start after {waited:.1f} s " + (
+                    "(inspector is ready)" if ready else "(inspector not found, start anyway)"))
+        elapsed = 0.0 if self.t_start is None else (time.monotonic() - self.t_start) * self.speed
         total = self.timeline.total
         if self.loop:
             cycle, t = divmod(elapsed, total)
@@ -129,16 +139,7 @@ class CellNode(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = CellNode()
-    try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    RU.spin(CellNode, args)
 
 
 if __name__ == "__main__":
