@@ -31,8 +31,16 @@ ENV_MARGIN = {"gain": 0.04, "background": 5.0, "grad": 0.03}
 AREA_TOL = 0.15
 COLORS = {"OK": (12, 163, 12), "NG": (208, 59, 59), "HOLD": (250, 178, 25)}  # RGB（状態の色）
 LABEL_JA = {"OK": "OK", "NG": "NG", "HOLD": "保留"}
-_XN = (imaging._XS - imaging.W / 2) / 100.0
-_YN = (imaging._YS - imaging.H / 2) / 100.0
+_GRIDS: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]] = {}
+
+
+def _grid(shape) -> tuple[np.ndarray, np.ndarray]:
+    """画像の中心を 0、100 画素を 1 とした座標（画像の大きさごとに 1 回だけ作る）。"""
+    key = (int(shape[0]), int(shape[1]))
+    if key not in _GRIDS:
+        ys, xs = np.mgrid[0:key[0], 0:key[1]].astype(np.float32)
+        _GRIDS[key] = ((xs - key[1] / 2) / 100.0, (ys - key[0] / 2) / 100.0)
+    return _GRIDS[key]
 
 
 @dataclass
@@ -45,6 +53,8 @@ class Template:
     radius: float
     env_lo: dict = field(default_factory=dict)
     env_hi: dict = field(default_factory=dict)
+    t_ok: float = 3.0
+    t_ng: float = 9.0
 
 
 @dataclass
@@ -89,9 +99,10 @@ def align(gray: np.ndarray, mask: np.ndarray, profile: bool) -> tuple[np.ndarray
         ang = 0.5 * math.degrees(math.atan2(2 * mom["mu11"], mom["mu20"] - mom["mu02"]))
         ang = (ang + 45.0) % 90.0 - 45.0  # 縦長・横長のどちらでも、水平・垂直に近い向きへ
     M = cv2.getRotationMatrix2D((cx, cy), ang, 1.0)
-    M[:, 2] += (imaging.W / 2 - cx, imaging.H / 2 - cy)
-    a = cv2.warpAffine(gray, M, (imaging.W, imaging.H), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-    m = cv2.warpAffine(mask.astype(np.float32), M, (imaging.W, imaging.H), flags=cv2.INTER_LINEAR)
+    h, w = gray.shape[:2]  # 疑似カメラ（320x240）でも Isaac Sim（480x360 など）でも同じように使う
+    M[:, 2] += (w / 2 - cx, h / 2 - cy)
+    a = cv2.warpAffine(gray, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    m = cv2.warpAffine(mask.astype(np.float32), M, (w, h), flags=cv2.INTER_LINEAR)
     return a, m, M
 
 
@@ -100,7 +111,8 @@ def _plane_fit(R: np.ndarray, roi: np.ndarray, iters: int = 3) -> np.ndarray:
     ys, xs = np.nonzero(roi[::2, ::2])
     ys, xs = ys * 2, xs * 2
     vals = R[ys, xs]
-    X = np.column_stack([np.ones_like(xs, dtype=np.float64), (xs - imaging.W / 2) / 100.0, (ys - imaging.H / 2) / 100.0])
+    h, w = roi.shape
+    X = np.column_stack([np.ones_like(xs, dtype=np.float64), (xs - w / 2) / 100.0, (ys - h / 2) / 100.0])
     keep = np.ones(len(vals), bool)
     coef = np.array([np.median(vals), 0.0, 0.0])
     for _ in range(iters):
@@ -117,7 +129,8 @@ def measure(A: np.ndarray, mean: np.ndarray, roi: np.ndarray) -> tuple[np.ndarra
     """(ずれの地図 D, 明るさの平面の係数)。D = 画像 / (平均の見え方 × 平面) - 1。"""
     R = np.where(roi, A / np.maximum(mean, 1e-3), 0.0)
     coef = _plane_fit(R, roi)
-    plane = coef[0] + coef[1] * _XN + coef[2] * _YN
+    xn, yn = _grid(roi.shape)
+    plane = coef[0] + coef[1] * xn + coef[2] * yn
     D = np.where(roi, R / np.maximum(plane, 1e-3) - 1.0, 0.0).astype(np.float32)
     return D, coef
 
@@ -160,6 +173,15 @@ def defect_type(c: dict) -> str:
 def background_level(gray: np.ndarray, mask: np.ndarray) -> float:
     far = cv2.dilate(mask, np.ones((15, 15), np.uint8)) == 0
     return float(np.median(gray[far])) if far.any() else 0.0
+
+
+def base_type(face_type: str) -> str:
+    """"bolt_profile@side_top" のように面の名前を足した鍵から、面の種類だけを取り出す。
+
+    Isaac Sim では、同じ種類でもトレイの上から撮る面と手で持って撮る面で背景や照明が違うので、
+    面の名前ごとに別の「ふつうの見え方」を学ぶ。
+    """
+    return face_type.split("@")[0]
 
 
 class Inspector:
@@ -209,7 +231,7 @@ class Inspector:
         for (name, ft), images in samples.items():
             if len(images) <= n_fit:
                 raise ValueError(f"{name}/{ft}: 良品の画像が足りない（{len(images)} 枚、学びに {n_fit} 枚 + しきい値用）")
-            profile = ft in imaging.PROFILE_TYPES
+            profile = base_type(ft) in imaging.PROFILE_TYPES
             shots = []
             for img in images:
                 gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY).astype(np.float32)
@@ -245,16 +267,24 @@ class Inspector:
                 tpl.env_lo[k] = float(vals.min() - 0.25 * spread - margin)
                 tpl.env_hi[k] = float(vals.max() + 0.25 * spread + margin)
             self.templates[(name, ft)] = tpl
+            val = []
             for D, _ in measured[n_fit:]:  # しきい値は、学びに使っていない良品で決める
                 comps = components(D, tpl)
-                good_scores.append(comps[0]["energy"] if comps else 0.0)
+                val.append(comps[0]["energy"] if comps else 0.0)
+            # しきい値はレシピ（部品 x 面）ごと。1 つの面のばらつきが大きくても、ほかの面の感度を落とさない
+            # OK と保留の境: 良品の 98% が OK になる点数。NG と保留の境: 良品で出た最大の点数の 2 倍
+            tpl.t_ok = max(float(np.percentile(val, 98)), 3.0)
+            tpl.t_ng = max(2.0 * float(np.max(val)), 3.0 * tpl.t_ok)
+            good_scores += val
         g = np.array(good_scores)
-        # OK と保留の境: 良品の 98% が OK になる点数。NG と保留の境: 良品で出た最大の点数の 2 倍
-        self.t_ok = max(float(np.percentile(g, 98)), 3.0)
-        self.t_ng = max(2.0 * float(g.max()), 3.0 * self.t_ok)
+        t_ok = [t.t_ok for t in self.templates.values()]
+        t_ng = [t.t_ng for t in self.templates.values()]
+        self.t_ok, self.t_ng = float(np.median(t_ok)), float(np.median(t_ng))  # 表示用（代表値）
         self.calibration = {"templates": len(self.templates), "good_images": int(len(g)),
                             "good_score_p50": float(np.median(g)), "good_score_p98": float(np.percentile(g, 98)),
-                            "good_score_max": float(g.max()), "t_ok": self.t_ok, "t_ng": self.t_ng}
+                            "good_score_max": float(g.max()), "t_ok": self.t_ok, "t_ng": self.t_ng,
+                            "t_ok_range": [float(min(t_ok)), float(max(t_ok))],
+                            "t_ng_range": [float(min(t_ng)), float(max(t_ng))]}
         return self.calibration
 
     # ---- 判定 ----
@@ -264,7 +294,7 @@ class Inspector:
         mask = segment(gray)
         if mask is None:
             return Result("HOLD", 0.0, "no_part")
-        a, m, M = align(gray, mask, face_type in imaging.PROFILE_TYPES)
+        a, m, M = align(gray, mask, base_type(face_type) in imaging.PROFILE_TYPES)
         D, coef = measure(a, tpl.mean, tpl.roi)
         feats = self._features(gray, mask, tpl, coef)
         if abs(feats["area_ratio"] - 1.0) > AREA_TOL:
@@ -283,10 +313,10 @@ class Inspector:
             x0, y0 = pts.min(axis=0)
             x1, y1 = pts.max(axis=0)
             boxes.append([int(x0), int(y0), int(math.ceil(x1 - x0)), int(math.ceil(y1 - y0))])
-        if score < self.t_ok:
+        if score < tpl.t_ok:
             return Result("OK", score, "clean", None, boxes, feats)
         dtype = defect_type(comps[0])
-        if score >= self.t_ng:
+        if score >= tpl.t_ng:
             return Result("NG", score, "defect", dtype, boxes, feats)
         return Result("HOLD", score, "uncertain", dtype, boxes, feats)
 

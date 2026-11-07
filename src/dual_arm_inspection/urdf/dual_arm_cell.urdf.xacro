@@ -186,7 +186,8 @@
   <link name="r_camera_link">
     <xacro:box_at x="0" y="0" z="0.015" sx="0.045" sy="0.045" sz="0.03" mat="camera_blue"/>
     <xacro:cyl_z r="0.03" l="0.005" z="0.0275" mat="lamp"/>
-    <xacro:cyl_z r="0.012" l="0.02" z="0.04" mat="black"/>
+    <!-- レンズは光学中心（r_camera_optical_frame、r_link6 から 0.05）で終わる。前に出すと Isaac Sim のカメラがレンズの中から写す -->
+    <xacro:cyl_z r="0.012" l="0.02" z="0.02" mat="black"/>
     <xacro:inertia m="0.2"/>
   </link>
   <joint name="r_camera_joint" type="fixed">

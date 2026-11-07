@@ -133,7 +133,26 @@ pixi run test_dual_arm     # pytest
 - 1 周 195 秒を 50Hz で刻んだ 9,746 点: 上下限の外 0、腕どうしの最短 0.052 m（下限 0.03 m）、机・胴体・照明との最短 0.050 m
 - 検査（疑似画像 200 枚）: 良品 143 → OK 142・保留 1 ／ 不良 50 → NG 49・OK 1（見逃し: 強さ 0.00 のごく薄い傷）／ 範囲外 7 → すべて保留
 
-数値は自作の疑似画像での結果で、欠陥の強さや照明の仮定で変わる（実物では未検証）。Isaac Sim で同じ姿勢を撮る下書きは [`src/dual_arm_inspection/isaac`](src/dual_arm_inspection/isaac/README.md)。
+数値は自作の疑似画像での結果で、欠陥の強さや照明の仮定で変わる（実物では未検証）。
+
+**Isaac Sim 6.2 でも撮った（2026-11-07）。** 同じ関節角で右手首の Replicator カメラから撮り、Isaac Sim の良品だけで学び直して同じ検査で判定した（手順: [`src/dual_arm_inspection/isaac`](src/dual_arm_inspection/isaac/README.md)）。
+
+```powershell
+C:\isaacsim\python.bat src\dual_arm_inspection\isaac\capture_inspection.py --no-ros-env --width 480 --height 360 --good-out src\dual_arm_inspection\isaac\out\good --good-repeat 30 --test-out src\dual_arm_inspection\isaac\out\test --test-repeat 6 --defects 0.4 --p-ood 0.05 --seed 2
+pixi run isaac_figure
+```
+
+| | 疑似画像（200 枚） | Isaac Sim（162 枚） |
+|---|---|---|
+| 見逃し | 2.0% | 5.4% |
+| 過検出 | 0.0% | 3.0% |
+| 人に回る（保留） | 4.0% | 18.5% |
+| 範囲外を保留 | 7 / 7 | 6 / 6 |
+
+- 良品 810 枚 + 欠陥あり 162 枚を 136 秒（起動を含む）、GPU のメモリはパソコン全体で最大 3.1GB（RTX 4070、480x360、画面なし）
+- 自作の運動学のカメラ位置と Isaac Sim のカメラ位置の差: 972 枚すべて 1mm 以下
+
+<img src="docs/isaac_vs_synthetic.png" width="720" alt="疑似画像と Isaac Sim の画像で、OK・NG・保留の表と判定の見本を並べた絵">
 
 確認用のコマンド:
 
@@ -178,7 +197,7 @@ pixi run ros2 topic hz /topic   # 約 2Hz
 - [x] turtlesim で移動ロボットを動かす（亀に「F」の字を描かせる。位置を見ながら速度を決める P 制御）
 - [x] ロボット × ブロックチェーン: 稼働を署名つきの台帳に記録し、働いた分だけ請求する（robot_ledger）
 - [x] 双腕の外観検査セル: xacro のロボット・逆運動学・RViz・疑似カメラ・3 段判定（dual_arm_inspection）
-- [ ] 双腕セルを Isaac Sim で撮る（下書きまで。`src/dual_arm_inspection/isaac`）
+- [x] 双腕セルを Isaac Sim で撮り、同じ検査で判定して疑似画像と比べる（`src/dual_arm_inspection/isaac`）
 - [ ] 台帳を Isaac Sim のロボット（Franka）にもつなぐ
 - [ ] Isaac Sim × ROS 2（公式の `IsaacSim-ros_workspaces` に移る）
 - [ ] Isaac Lab で強化学習

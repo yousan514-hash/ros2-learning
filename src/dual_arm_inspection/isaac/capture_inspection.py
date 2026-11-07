@@ -1,28 +1,25 @@
-"""【下書き・まだ動かしていない】Isaac Sim 6.2 で双腕セルを読み込み、右手首の Replicator カメラで検査の画像を撮る。
+r"""Isaac Sim 6.2 で双腕セルを読み込み、右手首の Replicator カメラで検査の画像を撮る（2026-11-07 に動いた）。
 
-Isaac Sim の Python で動かす（pixi の環境ではない）。初回は藤田さんが Isaac Sim を一度起動して、
-ライセンス（EULA）に自分で同意してから使う。このスクリプトは OMNI_KIT_ACCEPT_EULA を設定しない。
+Isaac Sim の Python で動かす（pixi の環境ではない）。手順と結果は同じフォルダの README.md。
 
-    C:\\isaacsim\\python.bat src\\dual_arm_inspection\\isaac\\capture_inspection.py --max-shots 3
-    C:\\isaacsim\\python.bat src\\dual_arm_inspection\\isaac\\capture_inspection.py --good-only --repeat 6 --out ...\\good
-    C:\\isaacsim\\python.bat src\\dual_arm_inspection\\isaac\\capture_inspection.py --defects 0.5 --out ...\\test
+    C:\isaacsim\python.bat src\dual_arm_inspection\isaac\capture_inspection.py --no-ros-env --max-shots 3 --good-only --width 480 --height 360 --out src\dual_arm_inspection\isaac\out\try
+    C:\isaacsim\python.bat src\dual_arm_inspection\isaac\capture_inspection.py --no-ros-env --width 480 --height 360 --good-out ...\good --good-repeat 30 --test-out ...\test --test-repeat 6
 
 前もって pixi の環境で `pixi run dual_arm_urdf` を実行し、isaac/out/ に dual_arm.urdf と inspection_plan.json を作っておく。
+このスクリプトは OMNI_KIT_ACCEPT_EULA を設定しない。
 
 流れ:
-  1. URDF を USD に変換する（isaacsim.asset.importer.urdf の URDFImporter。根元は固定、固定の関節はまとめない
-     → r_camera_optical_frame のリンクが USD に残るので、そこにカメラを付けられる）
-  2. 新しいステージに、ロボット・机・トレイ・部品（part_shapes.py と同じ三角形）・照明を置く
+  1. URDF を USD に変換する（URDFImporter。根元は固定、固定の関節はまとめない → r_camera_optical_frame が残る）。
+     URDF より新しい USD があれば使い回す。物理は USD の "Physics" の切り替えで "physx" を選ぶ
+  2. 新しいステージに、ロボット・机・黒っぽいトレイ・部品（part_shapes.py と同じ三角形）・照明・黒い背景板を置く
   3. 右手首の r_camera_optical_frame の下に USD のカメラを作る（ROS の光学座標 z 前・y 下 → USD のカメラ -z 前・y 上
-     なので x 軸まわりに 180 度回す）。リング照明として、同じ向きの円盤の光をカメラに付ける
-  4. 撮影の一覧（ROS 2 の cell_node と同じ計画）の関節角を順に入れ、部品を置き、Replicator で撮る
-  5. 欠陥（打痕・傷・汚れ）は、面の上に小さな形を置いて作る（--defects の確率）。意味のラベルを付けて、
-     外接する四角（bounding_box_2d_tight）も正解として保存する
+     なので x 軸まわりに 180 度）。リング照明として、同じ向きの円盤の光を付ける
+  4. 撮影の一覧（ROS 2 の cell_node と同じ計画）の関節角を順に入れ、部品を置き、倍率を合わせて Replicator で撮る
+  5. 欠陥（打痕・傷・汚れ）は、最初に作っておいた小さな形を、材料のある所に動かして見せる。範囲外の照明もときどき入れる
   6. 画像（PNG）と shots.json を書き出す。判定は pixi の環境で judge_folder.py が行う（OpenCV の検査と同じ）
 
-GPU は RTX 4070（12GB）で公式の最低要件（16GB）に届かないので、画面なし（headless）・640x480・
-物理の当たり判定なし（関節角を直接入れる）・部品は単純な形、で軽くしている。
-API の名前は C:\\isaacsim の 6.2.0 の standalone_examples と skills/ を読んで合わせたが、実行はしていない。
+RTX 4070（12GB）は公式の最低要件（16GB）に届かないが、画面なし・480x360・RaytracedLighting・FXAA で、
+GPU のメモリはパソコン全体で約 3.1GB だった。
 """
 from __future__ import annotations
 
@@ -36,7 +33,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 PKG = HERE.parent
 
-parser = argparse.ArgumentParser(description="双腕セルの検査画像を Isaac Sim で撮る（下書き）")
+parser = argparse.ArgumentParser(description="双腕セルの検査画像を Isaac Sim で撮る")
 parser.add_argument("--plan", default=str(HERE / "out" / "inspection_plan.json"))
 parser.add_argument("--urdf", default=str(HERE / "out" / "dual_arm.urdf"))
 parser.add_argument("--usd-dir", default=str(HERE / "out" / "usd"), help="URDF から作った USD を置く場所")
@@ -48,13 +45,30 @@ parser.add_argument("--repeat", type=int, default=1, help="撮影の一覧を何
 parser.add_argument("--defects", type=float, default=0.3, help="欠陥を置く確率")
 parser.add_argument("--good-only", action="store_true", help="欠陥を置かない（良品だけで学ぶ用）")
 parser.add_argument("--seed", type=int, default=1)
-parser.add_argument("--ring-intensity", type=float, default=3000.0, help="リング照明の強さ（明るすぎ・暗すぎなら調整）")
+parser.add_argument("--ring-intensity", type=float, default=1500.0, help="リング照明の強さ（3000 だと平らな面が 220 前後で頭打ちに近かった）")
 parser.add_argument("--gui", action="store_true", help="画面を出す（重いので最初は出さない）")
+parser.add_argument("--renderer", default="RaytracedLighting", help="RaytracedLighting（軽い）/ RealTimePathTracing")
+parser.add_argument("--fill", type=float, default=0.7, help="部品が画面の高さの何割に写るように倍率を合わせるか")
+parser.add_argument("--good-out", default="", help="これを渡すと 1 回の起動で良品の組と欠陥ありの組を続けて撮る")
+parser.add_argument("--good-repeat", type=int, default=5, help="良品の組: 撮影の一覧を何周するか")
+parser.add_argument("--test-out", default="", help="欠陥ありの組を書き出す場所（--good-out なしなら欠陥ありの組だけ撮る）")
+parser.add_argument("--test-repeat", type=int, default=3, help="欠陥ありの組: 撮影の一覧を何周するか")
+parser.add_argument("--p-ood", type=float, default=0.05, help="欠陥ありの組で、範囲外の照明（暗すぎ・明るすぎ）にする確率")
+parser.add_argument("--no-jitter", action="store_true", help="照明の強さと部品の置き方のばらつきを入れない")
+parser.add_argument("--reimport", action="store_true", help="URDF から USD を作り直す（既定では、URDF より新しい USD があれば使い回す）")
 args, _ = parser.parse_known_args()
 
+import time  # noqa: E402
+import traceback  # noqa: E402
+
+T0 = time.monotonic()
 from isaacsim import SimulationApp  # noqa: E402
 
-simulation_app = SimulationApp({"headless": not args.gui, "width": 1280, "height": 720})
+# 既定の DLSS は描画を半分の解像度にしてから引き伸ばす（480x360 → 240x180 で描いていた）。
+# 検査の画像なので、引き伸ばさない FXAA（anti_aliasing=2）にし、描き方も軽い RaytracedLighting にする
+simulation_app = SimulationApp({"headless": not args.gui, "width": 1280, "height": 720,
+                                "renderer": args.renderer, "anti_aliasing": 2})
+print(f"[time] SimulationApp ready: {time.monotonic() - T0:.1f} s", flush=True)
 
 # ここから下の import は SimulationApp を作ったあとでないと読めない
 import numpy as np  # noqa: E402
@@ -62,7 +76,7 @@ import omni.kit.app  # noqa: E402
 import omni.replicator.core as rep  # noqa: E402
 import omni.timeline  # noqa: E402
 import omni.usd  # noqa: E402
-from pxr import Gf, Sdf, UsdGeom, UsdLux, UsdPhysics, UsdShade, Vt  # noqa: E402
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdPhysics, UsdShade, Vt  # noqa: E402
 
 ext = omni.kit.app.get_app().get_extension_manager()
 for name in ("omni.scene.optimizer.core", "isaacsim.robot.schema"):  # urdf_import.py の例と同じ
@@ -143,6 +157,15 @@ def add_semantic(prim, label: str):
 
 # ---------------------------------------------------------------- 1. URDF → USD
 def import_robot() -> str:
+    # 毎回変換すると dual_arm_1, dual_arm_2 ... と増えるので、URDF より新しい USD があれば使い回す
+    existing = Path(args.usd_dir) / "dual_arm" / "dual_arm.usda"
+    if not args.reimport and existing.exists() and existing.stat().st_mtime > Path(args.urdf).stat().st_mtime:
+        print(f"robot USD (reuse): {existing}", flush=True)
+        return str(existing)
+    if existing.exists():
+        import shutil
+
+        shutil.rmtree(existing.parent, ignore_errors=True)  # 自分で作った out/usd/dual_arm だけを消す
     cfg = URDFImporterConfig()
     cfg.urdf_path = os.path.abspath(args.urdf)
     cfg.usd_path = os.path.abspath(args.usd_dir)
@@ -169,11 +192,16 @@ def build_stage(robot_usd: str, plan: dict):
     UsdGeom.SetStageMetersPerUnit(stage, 1.0)
     rep.orchestrator.set_capture_on_play(False)
     UsdGeom.Xform.Define(stage, "/World")
-    stage_utils.add_reference_to_stage(usd_path=robot_usd, path="/World/dual_arm")
+    # 変換した USD は物理を "Physics" の切り替え（variant）で持っていて、何も選ばないと物理なし（関節も動かせない）。
+    # PhysX の版を選ぶ（Franka の例で variants=[...] を渡しているのと同じやり方）
+    stage_utils.add_reference_to_stage(usd_path=robot_usd, path="/World/dual_arm", variants=[("Physics", "physx")])
 
     cell = plan["cell"]
     wood = preview_material(stage, "/World/Looks/wood", (0.76, 0.66, 0.50), 0.0, 0.7)
-    tray = preview_material(stage, "/World/Looks/tray", (0.20, 0.33, 0.45), 0.0, 0.6)
+    # トレイと背景板は黒っぽくする（撮像の標準化: 背景を暗くそろえると、部品を背景から切り出しやすい）
+    tray = preview_material(stage, "/World/Looks/tray", (0.04, 0.045, 0.05), 0.0, 0.9)
+    black = preview_material(stage, "/World/Looks/backdrop", (0.02, 0.02, 0.02), 0.0, 1.0)
+    backdrop = add_box(stage, "/World/backdrop", (0.0, 0.0, -5.0), (0.16, 0.16, 0.002), black)
     tc, ts = cell["table_center"], cell["table_size"]
     add_box(stage, "/World/table", (tc[0], tc[1], cell["table_top_z"] - ts[2] / 2), ts, wood)
     rc, rs = cell["tray_center"], cell["tray_size"]
@@ -211,7 +239,25 @@ def build_stage(robot_usd: str, plan: dict):
     UsdGeom.Xformable(ring).AddRotateXOp().Set(180.0)
     ring.CreateRadiusAttr(0.03)
     ring.CreateIntensityAttr(args.ring_intensity)
-    return stage, parts, str(cam.GetPath()), attached, parent
+    return stage, parts, cam, attached, parent, backdrop.GetPrim()
+
+
+def visible_extent_mm(part: dict, face_type: str) -> float:
+    """写る部品のいちばん長い所（mm）。倍率をレシピのように部品ごとに合わせるのに使う（疑似カメラと同じ考え）。"""
+    if part["kind"] == "bolt":
+        return {"bolt_profile": part["length"] + part["head_height"], "hex_end": 2 * part["head_across_flats"] / 3 ** 0.5,
+                "circle_end": part["d"]}[face_type]
+    if part["kind"] == "nut":
+        return {"hex_ring": 2 * part["across_flats"] / 3 ** 0.5,
+                "nut_profile": max(part["height"], part["across_flats"])}[face_type]
+    return part["d_outer"]
+
+
+def zoom(cam, part: dict, face_type: str, distance_m: float):
+    """部品が画面の高さの fill 割に写る焦点距離にする（ピンホール: 写る高さ = 撮像素子の高さ x 距離 / 焦点距離）。"""
+    field_mm = visible_extent_mm(part, face_type) / args.fill
+    vertical_aperture = 20.955 * args.height / args.width
+    cam.GetFocalLengthAttr().Set(float(vertical_aperture * distance_m * 1000.0 / field_mm))
 
 
 def find_articulation_root(stage) -> str:
@@ -233,39 +279,92 @@ def disable_gravity(stage):
 
 
 # ---------------------------------------------------------------- 5. 欠陥
-def place_defect(stage, path, kind, center, normal, rng):
-    """面の中心の近くに、小さな形を置く（形の z を面の法線に合わせ、面から少し浮かせる）。"""
+def make_defect_pool(stage) -> dict:
+    """欠陥の形を、物理を動かす前に 1 種類ずつ作っておく（見えない状態）。
+
+    動いている途中で prim を足したり消したりすると、関節を動かす仕組み（Articulation）が効かなくなり、
+    腕が止まったままになった。そこで、作るのは最初の 1 回だけにし、撮るときは位置・大きさ・見える/見えないだけを変える。
+    """
+    pool = {}
+    shapes = {"dent": (UsdGeom.Sphere, (0.18, 0.18, 0.19), 0.8, 0.6),
+              "scratch": (UsdGeom.Cube, (0.30, 0.30, 0.32), 0.9, 0.2),
+              "stain": (UsdGeom.Cylinder, (0.35, 0.28, 0.20), 0.0, 0.9)}
+    UsdGeom.Xform.Define(stage, "/World/defects")
+    for kind, (cls, color, metallic, rough) in shapes.items():
+        g = cls.Define(stage, f"/World/defects/{kind}")
+        if kind == "dent":
+            g.CreateRadiusAttr(1.0)
+        elif kind == "scratch":
+            g.CreateSizeAttr(1.0)
+        else:
+            g.CreateRadiusAttr(1.0)
+            g.CreateHeightAttr(1.0)
+        bind(g.GetPrim(), preview_material(stage, f"/World/Looks/defect_{kind}", color, metallic, rough))
+        add_semantic(g.GetPrim(), kind)
+        UsdGeom.Imageable(g.GetPrim()).MakeInvisible()
+        pool[kind] = g.GetPrim()
+    return pool
+
+
+def defect_point(spec: dict, face: str, rng) -> tuple[np.ndarray, np.ndarray]:
+    """欠陥を置く点と法線（部品の座標、m）。面の中心ではなく、材料のある所に置く。
+
+    はじめは面の中心に置いていたので、ナット・座金では穴の真ん中に浮かび、ボルトの横では軸から浮いていた。
+    """
+    mm = 0.001
+    k = spec["kind"]
+    a = rng.uniform(0, 2 * np.pi)
+    if k == "bolt":
+        T = (spec["length"] + spec["head_height"]) * mm
+        z_head = -T / 2 + spec["length"] * mm
+        r = spec["d"] / 2 * mm
+        if face in ("side_top", "side_bottom"):
+            sx = 1.0 if face == "side_top" else -1.0
+            return np.array([sx * r, 0.0, rng.uniform(-T / 2 + 1 * mm, z_head - 1 * mm)]), np.array([sx, 0.0, 0.0])
+        if face == "head_end":
+            rr = rng.uniform(0, 0.55) * spec["head_across_flats"] / 2 * mm
+            return np.array([rr * np.cos(a), rr * np.sin(a), T / 2]), np.array([0.0, 0.0, 1.0])
+        rr = rng.uniform(0, 0.55) * r
+        return np.array([rr * np.cos(a), rr * np.sin(a), -T / 2]), np.array([0.0, 0.0, -1.0])
+    if k == "nut":
+        h, af = spec["height"] * mm, spec["across_flats"] * mm
+        if face == "side":  # 角（+y）の両側の平らな面の上
+            x = rng.uniform(-0.35, 0.35) * af
+            return np.array([x, af / 3 ** 0.5 - abs(x) / 3 ** 0.5, rng.uniform(-0.3, 0.3) * h]), np.array([0.0, 1.0, 0.0])
+        rin, rout = spec["d"] / 2 * mm, af / 2  # af はもう m
+    else:
+        h = spec["thickness"] * mm
+        rin, rout = spec["d_inner"] / 2 * mm, spec["d_outer"] / 2 * mm
+    rr = rng.uniform(rin + 0.25 * (rout - rin), rout - 0.25 * (rout - rin))  # 穴と外の縁から離す
+    sz = 1.0 if face == "top" else -1.0
+    return np.array([rr * np.cos(a), rr * np.sin(a), sz * h / 2]), np.array([0.0, 0.0, sz])
+
+
+def place_defect(pool, kind, center, normal, rng):
+    """面の中心の近くに欠陥の形を出す（形の z を面の法線に合わせ、面から少し浮かせる）。大きさは拡大率で変える。"""
     n = np.asarray(normal, float)
     n /= np.linalg.norm(n)
     helper = np.array([1.0, 0, 0]) if abs(n[0]) < 0.9 else np.array([0, 1.0, 0])
     u = np.cross(n, helper)
     u /= np.linalg.norm(u)
     v = np.cross(n, u)
-    p = np.asarray(center) + (rng.uniform(-1.5, 1.5) * u + rng.uniform(-1.5, 1.5) * v) * 1e-3 + n * 0.00005
-    scale = np.ones(3)
-    if kind == "dent":
-        g = UsdGeom.Sphere.Define(stage, path)
+    p = np.asarray(center) + n * 0.00005
+    if kind == "dent":  # 半径 0.6〜1.2mm の暗い球を、半分くらい埋める
         r = rng.uniform(0.0006, 0.0012)
-        g.CreateRadiusAttr(r)
-        p = p - n * r * 0.6  # 半分くらい埋める
-        mat = preview_material(stage, path + "_mat", (0.18, 0.18, 0.19), 0.8, 0.6)
-    elif kind == "scratch":
-        g = UsdGeom.Cube.Define(stage, path)
-        g.CreateSizeAttr(1.0)
-        scale = np.array([rng.uniform(0.003, 0.008), 0.0002, 0.00005])  # 長さ 3〜8mm・幅 0.2mm
-        mat = preview_material(stage, path + "_mat", (0.30, 0.30, 0.32), 0.9, 0.2)
-    else:  # stain
-        g = UsdGeom.Cylinder.Define(stage, path)
-        g.CreateRadiusAttr(rng.uniform(0.0015, 0.003))
-        g.CreateHeightAttr(0.00002)
-        mat = preview_material(stage, path + "_mat", (0.35, 0.28, 0.20), 0.0, 0.9)
+        scale = np.array([r, r, r])
+        p = p - n * r * 0.6
+    elif kind == "scratch":  # 長さ 3〜8mm・幅 0.2mm
+        scale = np.array([rng.uniform(0.003, 0.008), 0.0002, 0.00005])
+    else:  # 汚れ: 半径 1.5〜3mm の薄い円盤
+        r = rng.uniform(0.0015, 0.003)
+        scale = np.array([r, r, 0.00002])
     T = np.eye(4)
     T[:3, :3] = np.column_stack([u, v, n]) @ np.diag(scale)
     T[:3, 3] = p
-    set_world_matrix(g.GetPrim(), T)
-    bind(g.GetPrim(), mat)
-    add_semantic(g.GetPrim(), kind)
-    return str(g.GetPath())
+    prim = pool[kind]
+    set_world_matrix(prim, T)
+    UsdGeom.Imageable(prim).MakeVisible()
+    return prim
 
 
 # ---------------------------------------------------------------- 4・6. 撮る
@@ -286,17 +385,130 @@ def save_png(path: Path, rgba):
         np.save(path.with_suffix(".npy"), img)
 
 
+def place_backdrop(prim, shot):
+    """持って見せる面の後ろ 6cm に黒い板を置く（トレイの面を撮るときは遠くへどける）。"""
+    if shot["where"] != "hand":
+        set_world_matrix(prim, np.diag([0.16, 0.16, 0.002, 1.0]) + np.array([[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, -5.0],
+                                                                            [0, 0, 0, 0]]))
+        return
+    n = np.asarray(shot["face_normal_world"], float)
+    n /= np.linalg.norm(n)
+    helper = np.array([1.0, 0, 0]) if abs(n[0]) < 0.9 else np.array([0, 1.0, 0])
+    u = np.cross(n, helper)
+    u /= np.linalg.norm(u)
+    T = np.eye(4)
+    T[:3, :3] = np.column_stack([u, np.cross(n, u), n]) @ np.diag([0.16, 0.16, 0.002])
+    T[:3, 3] = np.asarray(shot["face_center_world"]) - n * 0.06
+    set_world_matrix(prim, T)
+
+
+def world_position(path: str, stage):
+    """prim の world の位置。物理で動くリンクは Fabric にしか書かれないことがあるので、XformPrim で読む。"""
+    try:
+        from isaacsim.core.experimental.prims import XformPrim
+
+        pos, _ = XformPrim(path).get_world_poses()
+        return np.asarray(pos.numpy() if hasattr(pos, "numpy") else pos, float).reshape(-1, 3)[0]
+    except Exception as exc:  # noqa: BLE001
+        print(f"[warn] XformPrim で読めなかった（USD から読む）: {exc!r}", flush=True)
+        xf = UsdGeom.Xformable(stage.GetPrimAtPath(path)).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        return np.array(xf.ExtractTranslation(), float)
+
+
+def jitter_pose(m, rng):
+    """部品の置き方のばらつき: 軸のまわりに ±3 度、位置を ±0.5mm（疑似カメラの位置・向きのずれに当たる）。"""
+    T = np.asarray(m, float).copy()
+    a = np.radians(rng.uniform(-3, 3))
+    rz = np.array([[np.cos(a), -np.sin(a), 0], [np.sin(a), np.cos(a), 0], [0, 0, 1]])
+    T[:3, :3] = T[:3, :3] @ rz
+    T[:3, 3] += rng.uniform(-0.0005, 0.0005, 3)
+    return T
+
+
+def capture_set(ctx, shots, out: Path, good_only: bool, defect_p: float, p_ood: float, rng):
+    """撮影の一覧を順に撮り、PNG と shots.json を out に書く。"""
+    out.mkdir(parents=True, exist_ok=True)
+    stage, robot, cam, ring = ctx["stage"], ctx["robot"], ctx["cam"], ctx["ring"]
+    timeline = omni.timeline.get_timeline_interface()
+    if not timeline.is_playing():  # 物理が止まっていると、関節角を入れても腕が動かない
+        timeline.play()
+        simulation_app.update()
+    records = []
+    for k, shot in enumerate(shots):
+        q = np.zeros((1, robot.num_dofs), dtype=np.float32)
+        q[0, ctx["dof_index"]] = shot["q"]
+        robot.set_dof_positions(q)
+        pose = shot["part_world"] if args.no_jitter else jitter_pose(shot["part_world"], rng)
+        set_world_matrix(ctx["parts"][shot["part"]], pose)
+        for name, m in shot["other_parts_world"].items():
+            set_world_matrix(ctx["parts"][name], m)
+        if not ctx["attached"]:
+            set_world_matrix(stage.GetPrimAtPath(ctx["cam_parent"]), shot["camera_world"])
+        place_backdrop(ctx["backdrop"], shot)
+        distance = float(np.linalg.norm(np.asarray(shot["camera_world"])[:3, 3] - np.asarray(shot["face_center_world"])))
+        zoom(cam, ctx["part_spec"][shot["part"]], shot["face_type"], distance)
+
+        gain, ood = 1.0, None
+        if not args.no_jitter:
+            gain = float(rng.uniform(0.9, 1.1))
+        if rng.random() < p_ood:  # 照明の劣化・外からの光の代わり
+            ood = str(rng.choice(["dim", "bright"]))
+            gain = float(rng.uniform(0.40, 0.55) if ood == "dim" else rng.uniform(1.6, 1.9))
+        ring.GetIntensityAttr().Set(args.ring_intensity * gain)
+
+        defects = []
+        if not good_only and rng.random() < defect_p:
+            kind = str(rng.choice(["dent", "scratch", "stain"]))
+            pt, nrm = defect_point(ctx["part_spec"][shot["part"]], shot["face"], rng)
+            pose_a = np.asarray(pose, float)
+            prim = place_defect(ctx["defect_pool"], kind, pose_a[:3, :3] @ pt + pose_a[:3, 3], pose_a[:3, :3] @ nrm, rng)
+            defects.append({"type": kind, "prim": prim})
+        for _ in range(6):  # 3 回では、関節角を入れたあとの位置の読み出しがまだ前の姿勢のことがあった
+            simulation_app.update()
+
+        # 自作の運動学（計画）と Isaac Sim に読み込んだロボットのカメラの位置の差（URDF の読み込みの確かめ）。
+        # 撮る前と撮ったあとの 2 回読む（読み出しが遅れていないかも見る）
+        cam_err = cam_err_after = None
+        target = np.asarray(shot["camera_world"])[:3, 3]
+        if ctx["attached"]:
+            cam_err = float(np.linalg.norm(world_position(ctx["cam_parent"], stage) - target))
+        rep.orchestrator.step(rt_subframes=8)
+        if ctx["attached"]:
+            cam_err_after = float(np.linalg.norm(world_position(ctx["cam_parent"], stage) - target))
+        name = f"{k:04d}_{shot['part']}_{shot['face']}.png"
+        save_png(out / name, ctx["rgb"].get_data())
+        box = ctx["bbox"].get_data()
+        records.append({"file": name, "seq": shot["seq"], "part": shot["part"], "face": shot["face"],
+                        "face_type": shot["face_type"], "where": shot["where"], "good": not defects and ood is None,
+                        "defects": [{"type": d["type"]} for d in defects], "ood": ood, "light_gain": gain,
+                        "bbox": np.asarray(box["data"]).tolist() if isinstance(box, dict) and "data" in box else None,
+                        "bbox_labels": box.get("info", {}).get("idToLabels") if isinstance(box, dict) else None,
+                        "camera_position_error_m": cam_err, "camera_position_error_after_m": cam_err_after})
+        print(f"{out.name}/{name}: defects={[d['type'] for d in defects]} ood={ood} camera_err={cam_err} "
+              f"after={cam_err_after} [time] {time.monotonic() - T0:.1f} s", flush=True)
+        for d in defects:
+            UsdGeom.Imageable(d["prim"]).MakeInvisible()
+    # ここで rep.orchestrator.wait_until_complete() を呼ぶと Replicator がタイムラインを止め、物理が進まなくなって
+    # 次の組で腕が動かなかった（画像は注釈から直接保存しているので、待つのは最後に 1 回だけにする）
+    (out / "shots.json").write_text(json.dumps({"shots": records, "args": vars(args)}, ensure_ascii=False, indent=1),
+                                    encoding="utf-8")
+    print(f"saved {len(records)} shots to {out} [time] {time.monotonic() - T0:.1f} s", flush=True)
+
+
 def main():
     plan = json.loads(Path(args.plan).read_text(encoding="utf-8"))
+    part_spec = {p["name"]: p for p in plan["parts"]}
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(args.seed)
 
     robot_usd = import_robot()
-    stage, parts, cam_path, attached, cam_parent = build_stage(robot_usd, plan)
+    print(f"[time] URDF -> USD: {time.monotonic() - T0:.1f} s", flush=True)
+    stage, parts, cam, attached, cam_parent, backdrop = build_stage(robot_usd, plan)
+    defect_pool = make_defect_pool(stage)  # 物理を動かす前に作る
     disable_gravity(stage)
 
-    rp = rep.create.render_product(cam_path, (args.width, args.height))
+    rp = rep.create.render_product(str(cam.GetPath()), (args.width, args.height))
     rgb = get_annotator("rgb")
     rgb.attach([rp])
     bbox = get_annotator("bounding_box_2d_tight")
@@ -305,63 +517,43 @@ def main():
     timeline = omni.timeline.get_timeline_interface()
     timeline.play()
     simulation_app.update()
-    robot = Articulation(find_articulation_root(stage))
+    root = find_articulation_root(stage)
+    print(f"articulation root: {root}", flush=True)
+    robot = Articulation(root)
+    print(f"articulation dofs: {robot.dof_names}", flush=True)
     names = plan["joint_names"]
     dof_index = [robot.dof_names.index(n) for n in names]
-    print(f"articulation: {robot.dof_names}")
+    print(f"[time] stage ready: {time.monotonic() - T0:.1f} s", flush=True)
 
-    shots = plan["shots"] * args.repeat
-    if args.max_shots:
-        shots = shots[: args.max_shots]
-    records = []
-    for k, shot in enumerate(shots):
-        q = np.zeros((1, robot.num_dofs), dtype=np.float32)
-        q[0, dof_index] = shot["q"]
-        robot.set_dof_positions(q)
-        set_world_matrix(parts[shot["part"]], shot["part_world"])
-        for name, m in shot["other_parts_world"].items():
-            set_world_matrix(parts[name], m)
-        if not attached:
-            set_world_matrix(stage.GetPrimAtPath(cam_parent), shot["camera_world"])
-
-        defects = []
-        if not args.good_only and rng.random() < args.defects:
-            kind = str(rng.choice(["dent", "scratch", "stain"]))
-            path = place_defect(stage, f"/World/defects/d{k}", kind, shot["face_center_world"],
-                                shot["face_normal_world"], rng)
-            defects.append({"type": kind, "prim": path})
-        for _ in range(3):
-            simulation_app.update()
-
-        # 自作の運動学（計画）と Isaac Sim のカメラの位置の差。URDF の読み込みが正しいかの確かめ
-        cam_err = None
-        if attached:
-            xf = UsdGeom.Xformable(stage.GetPrimAtPath(cam_parent)).ComputeLocalToWorldTransform(0)
-            cam_err = float(np.linalg.norm(np.array(xf.ExtractTranslation()) - np.array(shot["camera_world"])[:3, 3]))
-
-        rep.orchestrator.step(rt_subframes=8)
-        name = f"{k:04d}_{shot['part']}_{shot['face']}.png"
-        save_png(out / name, rgb.get_data())
-        box = bbox.get_data()
-        records.append({"file": name, "seq": shot["seq"], "part": shot["part"], "face": shot["face"],
-                        "face_type": shot["face_type"], "where": shot["where"], "good": not defects,
-                        "defects": defects, "bbox": np.asarray(box["data"]).tolist() if box is not None else None,
-                        "bbox_labels": box.get("info", {}).get("idToLabels") if isinstance(box, dict) else None,
-                        "camera_position_error_m": cam_err})
-        print(f"{name}: defects={[d['type'] for d in defects]} camera_err={cam_err}")
-        for d in defects:
-            stage.RemovePrim(d["prim"])
-            stage.RemovePrim(d["prim"] + "_mat")
-
+    ctx = {"stage": stage, "robot": robot, "dof_index": dof_index, "parts": parts, "part_spec": part_spec,
+           "cam": cam, "attached": attached, "cam_parent": cam_parent, "backdrop": backdrop,
+           "ring": UsdLux.DiskLight(stage.GetPrimAtPath(cam_parent + "/RingLight")), "rgb": rgb, "bbox": bbox,
+           "defect_pool": defect_pool}
+    if args.good_out or args.test_out:
+        if args.good_out:
+            capture_set(ctx, plan["shots"] * args.good_repeat, Path(args.good_out), True, 0.0, 0.0, rng)
+        if args.test_out:
+            capture_set(ctx, plan["shots"] * args.test_repeat, Path(args.test_out), False, args.defects, args.p_ood, rng)
+    else:
+        shots = plan["shots"] * args.repeat
+        if args.max_shots:
+            shots = shots[: args.max_shots]
+        capture_set(ctx, shots, out, args.good_only, args.defects, 0.0, rng)
     rep.orchestrator.wait_until_complete()
-    (out / "shots.json").write_text(json.dumps({"shots": records, "args": vars(args)}, ensure_ascii=False, indent=1),
-                                    encoding="utf-8")
-    print(f"saved {len(records)} shots to {out}")
     timeline.stop()
 
 
 if __name__ == "__main__":
     try:
         main()
+    except BaseException:  # noqa: BLE001
+        # close() のあとは fastShutdown ですぐにプロセスが終わり、トレースバックが出ないので、先に書き出す
+        tb = traceback.format_exc()
+        print(tb, flush=True)
+        try:
+            Path(args.out).mkdir(parents=True, exist_ok=True)
+            (Path(args.out) / "error.txt").write_text(tb, encoding="utf-8")
+        except OSError:
+            pass
     finally:
         simulation_app.close()
