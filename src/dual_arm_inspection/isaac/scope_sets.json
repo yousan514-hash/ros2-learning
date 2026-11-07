@@ -1,0 +1,37 @@
+{
+ "note": "2026-11-08 伊佐美: 使用範囲の中の不良を増やす撮影（瞳の保証つきのしきい値の材料）と、写り込みの 2 面の撮り方の比べ。capture_inspection.py --sets で 1 回の起動でまとめて撮る。画像は out/scope/<name>/（Git に入れない）。学ぶ用・しきい値を決める用・確かめる用は別の組で撮り、混ぜない。",
+ "defect": {
+  "note": "濃さ（ねらい）は 10〜90% を種類ごとに等間隔の帯から 1 つずつ。材質の色 = 亜鉛の色 x (1 - ねらい) ** gamma。gamma は試し撮り（各 27 枚）で、瞳の物差しの濃さがねらいに合うように種類ごとに決めた",
+  "contrast": [0.1, 0.9],
+  "gamma": {"scratch": 2.1, "dent": 1.5, "stain": 1.7},
+  "types": ["dent", "scratch", "stain"]
+ },
+ "groups": {
+  "tray": {"where": "tray", "note": "トレイの上から撮る面（ボルトの横・ナットの上・座金の上）"},
+  "head": {"face": ["head_end"], "note": "ボルトの頭の面（手で持つ）"},
+  "under": {"kind": ["nut", "washer"], "face": ["bottom"], "note": "ナット・座金の下の面（手で持つ）"},
+  "tip": {"face": ["tip_end"], "note": "ボルトの先端の面（写り込み: 後ろの頭と指）"},
+  "nut_side": {"kind": ["nut"], "face": ["side"], "note": "ナットの横（写り込み: 机や腕が映る）"}
+ },
+ "sets": [
+  {"name": "fit", "note": "学ぶ用（良品だけ）", "groups": ["tray", "head", "under"], "good_per_recipe": 30},
+  {"name": "calib", "note": "しきい値を決める用", "groups": ["tray", "head", "under"], "good_per_recipe": 20, "defects_per_group": 54, "fit_with": "fit"},
+  {"name": "verify", "note": "確かめる用（しきい値を決めたあとに 1 回だけ使う）", "groups": ["tray", "head", "under"], "good_per_recipe": 20, "defects_per_group": 54, "fit_with": "fit"},
+  {"name": "ood", "note": "範囲外の照明（暗い・明るいを 1 枚ずつ、半分に不良）", "groups": ["tray", "head", "under"], "ood_per_recipe": 2, "ood_defect_p": 0.5, "fit_with": "fit"},
+
+  {"name": "ab/tip_legacy/fit", "note": "先端の面: 前の撮り方", "groups": ["tip"], "view": {}, "good_per_recipe": 30},
+  {"name": "ab/tip_legacy/test", "groups": ["tip"], "view": {}, "good_per_recipe": 10, "defects_per_group": 30, "fit_with": "ab/tip_legacy/fit"},
+  {"name": "ab/tip_wide/fit", "note": "先端の面: 画角を広げて後ろの頭を見切れないようにする", "groups": ["tip"], "view": {"tip": "wide"}, "good_per_recipe": 30},
+  {"name": "ab/tip_wide/test", "groups": ["tip"], "view": {"tip": "wide"}, "good_per_recipe": 10, "defects_per_group": 30, "fit_with": "ab/tip_wide/fit"},
+  {"name": "ab/tip_collar/fit", "note": "先端の面: 軸を通す黒い穴あき板（すき間 0.05mm、先端から 1.5mm）", "groups": ["tip"], "view": {"tip": "collar", "tip_gap_mm": 0.05}, "good_per_recipe": 30},
+  {"name": "ab/tip_collar/test", "groups": ["tip"], "view": {"tip": "collar", "tip_gap_mm": 0.05}, "good_per_recipe": 10, "defects_per_group": 30, "fit_with": "ab/tip_collar/fit"},
+  {"name": "ab/tip_collar03/fit", "note": "先端の面: 穴あき板のすき間 0.3mm（実物の穴の精度の見込み）", "groups": ["tip"], "view": {"tip": "collar", "tip_gap_mm": 0.3}, "good_per_recipe": 30},
+  {"name": "ab/tip_collar03/test", "groups": ["tip"], "view": {"tip": "collar", "tip_gap_mm": 0.3}, "good_per_recipe": 10, "defects_per_group": 30, "fit_with": "ab/tip_collar03/fit"},
+  {"name": "ab/nut_legacy/fit", "note": "ナットの横: 前の撮り方（角をカメラに向ける）", "groups": ["nut_side"], "view": {}, "good_per_recipe": 30},
+  {"name": "ab/nut_legacy/test", "groups": ["nut_side"], "view": {}, "good_per_recipe": 10, "defects_per_group": 30, "fit_with": "ab/nut_legacy/fit"},
+  {"name": "ab/nut_flat/fit", "note": "ナットの横: 平らな面をカメラに向ける（部品を 30 度回す）", "groups": ["nut_side"], "view": {"nut": "flat"}, "good_per_recipe": 30},
+  {"name": "ab/nut_flat/test", "groups": ["nut_side"], "view": {"nut": "flat"}, "good_per_recipe": 10, "defects_per_group": 30, "fit_with": "ab/nut_flat/fit"},
+  {"name": "ab/nut_flat_big/fit", "note": "ナットの横: 平らな面を正面 + 背景板を 16cm → 40cm", "groups": ["nut_side"], "view": {"nut": "flat", "board": 0.4}, "good_per_recipe": 30},
+  {"name": "ab/nut_flat_big/test", "groups": ["nut_side"], "view": {"nut": "flat", "board": 0.4}, "good_per_recipe": 10, "defects_per_group": 30, "fit_with": "ab/nut_flat_big/fit"}
+ ]
+}

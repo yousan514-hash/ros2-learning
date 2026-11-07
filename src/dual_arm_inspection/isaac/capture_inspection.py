@@ -56,6 +56,11 @@ parser.add_argument("--test-repeat", type=int, default=3, help="欠陥ありの�
 parser.add_argument("--p-ood", type=float, default=0.05, help="欠陥ありの組で、範囲外の照明（暗すぎ・明るすぎ）にする確率")
 parser.add_argument("--no-jitter", action="store_true", help="照明の強さと部品の置き方のばらつきを入れない")
 parser.add_argument("--reimport", action="store_true", help="URDF から USD を作り直す（既定では、URDF より新しい USD があれば使い回す）")
+# 2026-11-08: 組の一覧（JSON）で、学ぶ用・しきい値を決める用・確かめる用などを 1 回の起動でまとめて撮る（scope_sets.json）
+parser.add_argument("--sets", default="", help="組の一覧の JSON（これを渡すと下の組の撮り方になる。欠陥は defect_mesh.py の濃さつき）")
+parser.add_argument("--sets-root", default=str(HERE / "out" / "scope"), help="組ごとのフォルダを作る場所")
+parser.add_argument("--only", default="", help="撮る組の名前（カンマ区切り。空なら全部）")
+parser.add_argument("--contrast-gamma", type=float, default=0.0, help="濃さ → 材質の色の換算の gamma（0 なら JSON の値）")
 args, _ = parser.parse_known_args()
 
 import time  # noqa: E402
@@ -87,6 +92,8 @@ from isaacsim.asset.importer.urdf.impl import URDFImporter, URDFImporterConfig  
 from isaacsim.core.experimental.prims import Articulation  # noqa: E402
 
 sys.path.insert(0, str(PKG))
+sys.path.insert(0, str(HERE))
+import defect_mesh as DM  # noqa: E402  numpy だけで書いてある（濃さと大きさを決めた欠陥の形）
 from dual_arm_inspection.part_shapes import part_triangles  # noqa: E402  numpy だけで書いてある
 
 
@@ -253,9 +260,9 @@ def visible_extent_mm(part: dict, face_type: str) -> float:
     return part["d_outer"]
 
 
-def zoom(cam, part: dict, face_type: str, distance_m: float):
+def zoom(cam, part: dict, face_type: str, distance_m: float, extent_mm: float | None = None):
     """部品が画面の高さの fill 割に写る焦点距離にする（ピンホール: 写る高さ = 撮像素子の高さ x 距離 / 焦点距離）。"""
-    field_mm = visible_extent_mm(part, face_type) / args.fill
+    field_mm = (extent_mm or visible_extent_mm(part, face_type)) / args.fill
     vertical_aperture = 20.955 * args.height / args.width
     cam.GetFocalLengthAttr().Set(float(vertical_aperture * distance_m * 1000.0 / field_mm))
 
@@ -495,6 +502,242 @@ def capture_set(ctx, shots, out: Path, good_only: bool, defect_p: float, p_ood: 
     print(f"saved {len(records)} shots to {out} [time] {time.monotonic() - T0:.1f} s", flush=True)
 
 
+# ---------------------------------------------------------------- 7. 組の一覧で撮る（2026-11-08）
+def _vec3_array(a):
+    a = np.asarray(a, np.float32)
+    try:
+        return Vt.Vec3fArray.FromNumpy(a)
+    except Exception:  # noqa: BLE001  古い USD には FromNumpy がない
+        return Vt.Vec3fArray([Gf.Vec3f(*map(float, p)) for p in a])
+
+
+def _define_dynamic_mesh(stage, path: str, topology, mat, label: str | None):
+    """点の位置だけを撮るたびに書き換えるメッシュ（つなぎ方は最初に 1 回だけ書く）。"""
+    counts, idx = topology
+    mesh = UsdGeom.Mesh.Define(stage, path)
+    n = max(idx) + 1
+    mesh.CreatePointsAttr(_vec3_array(np.zeros((n, 3))))
+    mesh.CreateFaceVertexCountsAttr(Vt.IntArray(counts))
+    mesh.CreateFaceVertexIndicesAttr(Vt.IntArray(idx))
+    mesh.CreateSubdivisionSchemeAttr("none")
+    mesh.CreateDoubleSidedAttr(True)
+    mesh.CreateNormalsAttr(_vec3_array(np.tile([0.0, 0.0, 1.0], (n, 1))))
+    mesh.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+    mesh.CreateExtentAttr(_vec3_array([[-1e-3] * 3, [1e-3] * 3]))
+    bind(mesh.GetPrim(), mat)
+    if label:
+        add_semantic(mesh.GetPrim(), label)
+    UsdGeom.Imageable(mesh.GetPrim()).MakeInvisible()
+    return mesh
+
+
+def _set_mesh(mesh, pts, normals=None):
+    pts = np.asarray(pts, float)
+    mesh.GetPointsAttr().Set(_vec3_array(pts))
+    if normals is not None:
+        mesh.GetNormalsAttr().Set(_vec3_array(normals))
+    mesh.GetExtentAttr().Set(_vec3_array([pts.min(axis=0), pts.max(axis=0)]))
+
+
+def make_graded_pool(stage, finish: dict) -> dict:
+    """濃さつきの欠陥（部品と同じ亜鉛の材質で、色だけを暗くする）と、ボルトの先端用の黒い穴あき板を作る。
+    前の欠陥と同じく、物理を動かす前に作っておき、撮るときは点の位置・色・見える/見えないだけを変える。"""
+    z = finish["zinc"]
+    UsdGeom.Xform.Define(stage, "/World/defects2")
+    pool = {}
+    for kind in DM.TYPES:
+        mpath = f"/World/Looks/graded_{kind}"
+        mat = preview_material(stage, mpath, z["color"], z["metallic"], z["roughness"])
+        mesh = _define_dynamic_mesh(stage, f"/World/defects2/{kind}", DM.TOPOLOGY[kind], mat, kind)
+        pool[kind] = {"mesh": mesh, "shader": UsdShade.Shader.Get(stage, mpath + "/Shader")}
+    black = preview_material(stage, "/World/Looks/collar", (0.02, 0.02, 0.02), 0.0, 1.0)
+    collar = _define_dynamic_mesh(stage, "/World/collar", DM.annulus_topology(48), black, None)
+    return {"defects": pool, "collar": collar, "zinc": z}
+
+
+def place_backdrop_at(prim, center, normal, size: float):
+    """面の後ろ 6cm に、size 四方の黒い板を置く。"""
+    n = np.asarray(normal, float)
+    n /= np.linalg.norm(n)
+    helper = np.array([1.0, 0, 0]) if abs(n[0]) < 0.9 else np.array([0, 1.0, 0])
+    u = np.cross(n, helper)
+    u /= np.linalg.norm(u)
+    T = np.eye(4)
+    T[:3, :3] = np.column_stack([u, np.cross(n, u), n]) @ np.diag([size, size, 0.002])
+    T[:3, 3] = np.asarray(center, float) - n * 0.06
+    set_world_matrix(prim, T)
+
+
+def hide_backdrop(prim):
+    set_world_matrix(prim, np.diag([0.16, 0.16, 0.002, 1.0]) + np.array([[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, -5.0],
+                                                                        [0, 0, 0, 0]]))
+
+
+def _match(shot: dict, g: dict) -> bool:
+    if "where" in g and shot["where"] != g["where"]:
+        return False
+    if "kind" in g and shot["kind"] not in g["kind"]:
+        return False
+    return not ("face" in g and shot["face"] not in g["face"])
+
+
+def build_entries(cfg: dict, sdef: dict, plan_shots: list, rng) -> list[dict]:
+    """1 つの組の撮影の一覧を作る。良品はレシピ（部品 x 面）ごとに同じ枚数、不良は面のまとまりごとに
+    defects_per_group 枚（種類 3 つを同じ数、濃さは 10〜90% を種類ごとに等間隔の帯から 1 つずつ）。順番は混ぜる。"""
+    dcfg = cfg["defect"]
+    lo, hi = dcfg["contrast"]
+    entries = []
+    for g in sdef["groups"]:
+        gs = [s for s in plan_shots if _match(s, cfg["groups"][g])]
+        if not gs:
+            raise ValueError(f"{sdef['name']}: まとまり {g} に当たる撮影がない")
+        for s in gs:
+            entries += [{"shot": s, "group": g, "defect": None, "ood": None}
+                        for _ in range(int(sdef.get("good_per_recipe", 0)))]
+        n = int(sdef.get("defects_per_group", 0))
+        if n:
+            specs = []
+            for ti, typ in enumerate(dcfg["types"]):
+                m = n // len(dcfg["types"]) + (1 if ti < n % len(dcfg["types"]) else 0)
+                ts = lo + (hi - lo) * (np.arange(m) + rng.uniform(0, 1, m)) / m
+                specs += [(typ, float(t)) for t in ts]
+            order = rng.permutation(len(specs))
+            for i, j in enumerate(order):
+                typ, t = specs[j]
+                entries.append({"shot": gs[i % len(gs)], "group": g, "defect": {"type": typ, "target": t}, "ood": None})
+        k_ood = int(sdef.get("ood_per_recipe", 0))
+        for s in gs:
+            for j in range(k_ood):
+                d = None
+                if rng.random() < float(sdef.get("ood_defect_p", 0.0)):
+                    d = {"type": str(rng.choice(dcfg["types"])), "target": float(rng.uniform(lo, hi))}
+                entries.append({"shot": s, "group": g, "defect": d, "ood": "dim" if j % 2 == 0 else "bright"})
+    return [entries[i] for i in rng.permutation(len(entries))]
+
+
+def view_geometry(shot: dict, spec: dict, view: dict) -> tuple[np.ndarray, np.ndarray, float | None]:
+    """撮り方に合わせた (部品の座標で足す回転, 面の中心の world, 倍率の基準の大きさ mm)。"""
+    extra = np.eye(4)
+    center = np.asarray(shot["face_center_world"], float)
+    extent = None
+    if spec["kind"] == "nut" and shot["face"] == "side" and view.get("nut") == "flat":
+        # 角ではなく平らな面をカメラに向ける（部品を軸のまわりに 30 度回す）。写る幅は角から角まで
+        extra = DM.rot_z(30.0)
+        P = np.asarray(shot["part_world"], float) @ extra
+        center = P[:3, :3] @ DM.nut_flat_center_local(spec) + P[:3, 3]
+        extent = max(spec["height"], 2 * spec["across_flats"] / 3 ** 0.5)
+    if spec["kind"] == "bolt" and shot["face"] == "tip_end" and view.get("tip") == "wide":
+        extent = 2 * spec["head_across_flats"] / 3 ** 0.5   # 後ろの頭が見切れないように、頭の角から角まで写す
+    return extra, center, extent
+
+
+def capture_entries(ctx, entries: list, out: Path, view: dict, gamma, rng, meta: dict):
+    """組の一覧を順に撮り、PNG と shots.json を out に書く（capture_set の新しい版。欠陥は濃さつき）。"""
+    out.mkdir(parents=True, exist_ok=True)
+    stage, robot, cam, ring = ctx["stage"], ctx["robot"], ctx["cam"], ctx["ring"]
+    gp = ctx["graded"]
+    zinc = np.asarray(gp["zinc"]["color"], float)
+    timeline = omni.timeline.get_timeline_interface()
+    if not timeline.is_playing():
+        timeline.play()
+        simulation_app.update()
+    board = float(view.get("board", 0.16))
+    records = []
+    for k, e in enumerate(entries):
+        shot = e["shot"]
+        spec = ctx["part_spec"][shot["part"]]
+        q = np.zeros((1, robot.num_dofs), dtype=np.float32)
+        q[0, ctx["dof_index"]] = shot["q"]
+        robot.set_dof_positions(q)
+        extra, center, extent = view_geometry(shot, spec, view)
+        pose = jitter_pose(shot["part_world"], rng) @ extra
+        set_world_matrix(ctx["parts"][shot["part"]], pose)
+        for name, m in shot["other_parts_world"].items():
+            set_world_matrix(ctx["parts"][name], m)
+        if shot["where"] == "hand":
+            place_backdrop_at(ctx["backdrop"], center, shot["face_normal_world"], board)
+        else:
+            hide_backdrop(ctx["backdrop"])
+        distance = float(np.linalg.norm(np.asarray(shot["camera_world"])[:3, 3] - center))
+        zoom(cam, spec, shot["face_type"], distance, extent)
+        ppm = args.fill * args.height / (extent or visible_extent_mm(spec, shot["face_type"]))
+
+        gain = float(rng.uniform(0.9, 1.1))
+        if e["ood"] == "dim":
+            gain = float(rng.uniform(0.40, 0.55))
+        elif e["ood"] == "bright":
+            gain = float(rng.uniform(1.6, 1.9))
+        ring.GetIntensityAttr().Set(args.ring_intensity * gain)
+
+        collar_on = spec["kind"] == "bolt" and shot["face"] == "tip_end" and view.get("tip") == "collar"
+        if collar_on:
+            _set_mesh(gp["collar"], DM.collar_points(spec, float(view.get("tip_gap_mm", 0.05))))
+            set_world_matrix(gp["collar"].GetPrim(), pose)
+            UsdGeom.Imageable(gp["collar"].GetPrim()).MakeVisible()
+
+        defects, shown = [], None
+        if e["defect"]:
+            typ, target = e["defect"]["type"], float(e["defect"]["target"])
+            geo = DM.make_defect(typ, spec, shot["face"], rng, ppm, view)
+            g_typ = float(gamma[typ]) if isinstance(gamma, dict) else float(gamma)   # 種類ごとに試し撮りで合わせた値
+            factor = DM.contrast_to_factor(target, g_typ)
+            color = zinc * factor * (np.asarray(DM.STAIN_TINT) if typ == "stain" else 1.0)
+            item = gp["defects"][typ]
+            item["shader"].GetInput("diffuseColor").Set(Gf.Vec3f(*map(float, color)))
+            _set_mesh(item["mesh"], geo["points"], geo["normals"])
+            set_world_matrix(item["mesh"].GetPrim(), pose)
+            UsdGeom.Imageable(item["mesh"].GetPrim()).MakeVisible()
+            shown = item["mesh"].GetPrim()
+            defects.append({"type": typ, "target_contrast": round(target, 4), "gamma": g_typ, "albedo_factor": round(factor, 5),
+                            "size_mm": geo["size_mm"], "s_mm": geo["s_mm"], "where": geo["where"],
+                            "shrink": geo["shrink"]})
+        for _ in range(6):
+            simulation_app.update()
+        cam_err = cam_err_after = None
+        target_cam = np.asarray(shot["camera_world"])[:3, 3]
+        if ctx["attached"]:
+            cam_err = float(np.linalg.norm(world_position(ctx["cam_parent"], stage) - target_cam))
+        rep.orchestrator.step(rt_subframes=8)
+        if ctx["attached"]:
+            cam_err_after = float(np.linalg.norm(world_position(ctx["cam_parent"], stage) - target_cam))
+        name = f"{k:04d}_{shot['part']}_{shot['face']}.png"
+        save_png(out / name, ctx["rgb"].get_data())
+        box = ctx["bbox"].get_data()
+        records.append({"file": name, "seq": shot["seq"], "part": shot["part"], "face": shot["face"],
+                        "face_type": shot["face_type"], "where": shot["where"], "group": e["group"],
+                        "good": not defects and e["ood"] is None, "defects": defects, "ood": e["ood"],
+                        "light_gain": gain, "view": view, "ppm": round(ppm, 4),
+                        "bbox": np.asarray(box["data"]).tolist() if isinstance(box, dict) and "data" in box else None,
+                        "bbox_labels": box.get("info", {}).get("idToLabels") if isinstance(box, dict) else None,
+                        "camera_position_error_m": cam_err, "camera_position_error_after_m": cam_err_after})
+        if k % 50 == 0 or k == len(entries) - 1:
+            print(f"{out.name}/{name}: defects={[(d['type'], d['target_contrast']) for d in defects]} ood={e['ood']} "
+                  f"camera_err_after={cam_err_after} [time] {time.monotonic() - T0:.1f} s", flush=True)
+        if shown is not None:
+            UsdGeom.Imageable(shown).MakeInvisible()
+        if collar_on:
+            UsdGeom.Imageable(gp["collar"].GetPrim()).MakeInvisible()
+    (out / "shots.json").write_text(json.dumps({"shots": records, "args": vars(args), **meta}, ensure_ascii=False,
+                                               indent=1), encoding="utf-8")
+    print(f"saved {len(records)} shots to {out} [time] {time.monotonic() - T0:.1f} s", flush=True)
+
+
+def run_sets(ctx, plan: dict, rng):
+    cfg = json.loads(Path(args.sets).read_text(encoding="utf-8"))
+    gamma = args.contrast_gamma or cfg["defect"]["gamma"]   # 数 1 つか、種類ごとの {"dent": ..., ...}
+    only = {s for s in args.only.split(",") if s}
+    root = Path(args.sets_root)
+    for sdef in cfg["sets"]:
+        if only and sdef["name"] not in only:
+            continue
+        entries = build_entries(cfg, sdef, plan["shots"], rng)
+        view = sdef.get("view", {})
+        print(f"[set] {sdef['name']}: {len(entries)} shots view={view}", flush=True)
+        capture_entries(ctx, entries, root / sdef["name"], view, gamma, rng,
+                        {"set": sdef, "defect_cfg": {**cfg["defect"], "gamma": gamma}, "groups": cfg["groups"],
+                         "seed": args.seed})
+
+
 def main():
     plan = json.loads(Path(args.plan).read_text(encoding="utf-8"))
     part_spec = {p["name"]: p for p in plan["parts"]}
@@ -506,6 +749,7 @@ def main():
     print(f"[time] URDF -> USD: {time.monotonic() - T0:.1f} s", flush=True)
     stage, parts, cam, attached, cam_parent, backdrop = build_stage(robot_usd, plan)
     defect_pool = make_defect_pool(stage)  # 物理を動かす前に作る
+    graded = make_graded_pool(stage, plan["finish"]) if args.sets else None
     disable_gravity(stage)
 
     rp = rep.create.render_product(str(cam.GetPath()), (args.width, args.height))
@@ -528,8 +772,10 @@ def main():
     ctx = {"stage": stage, "robot": robot, "dof_index": dof_index, "parts": parts, "part_spec": part_spec,
            "cam": cam, "attached": attached, "cam_parent": cam_parent, "backdrop": backdrop,
            "ring": UsdLux.DiskLight(stage.GetPrimAtPath(cam_parent + "/RingLight")), "rgb": rgb, "bbox": bbox,
-           "defect_pool": defect_pool}
-    if args.good_out or args.test_out:
+           "defect_pool": defect_pool, "graded": graded}
+    if args.sets:
+        run_sets(ctx, plan, rng)
+    elif args.good_out or args.test_out:
         if args.good_out:
             capture_set(ctx, plan["shots"] * args.good_repeat, Path(args.good_out), True, 0.0, 0.0, rng)
         if args.test_out:
