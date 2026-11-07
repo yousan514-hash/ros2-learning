@@ -1,0 +1,50 @@
+{
+ "draft": true,
+ "note": "瞳の案（2026-11-08）。今の台帳の UsageScope の欄（version・auto_faces・human_faces・min_contrast・basis）は v2 と同じ形。guarantee_proposal は新しい欄の提案で、台帳に入れるか・名前は千恵が決める。数字は自作の Isaac Sim と疑似画像だけ（実物では未確認）",
+ "version": "v3",
+ "name": "瞳の案 v3（v2 の面と濃さ + 見逃しの上限の約束）",
+ "auto_faces": [
+  "bolt_*/side_top",
+  "nut_*/top",
+  "washer_*/top",
+  "bolt_*/head_end",
+  "nut_*/bottom",
+  "washer_*/bottom"
+ ],
+ "human_faces": [
+  "bolt_*/tip_end",
+  "nut_*/side",
+  "bolt_*/side_bottom"
+ ],
+ "min_contrast": 0.2,
+ "basis": "guarantee_threshold.py（2026-11-08）。Isaac Sim 162 枚のうち範囲の中で濃さ 20% 以上の不良 24 枚、疑似画像の濃さ 20% 以上の不良 1485 枚で確かめた",
+ "guarantee_proposal": {
+  "risk": "使用範囲の中（auto_faces・照明は範囲内）で、濃さ min_contrast 以上の不良のうち、AI が OK にした割合",
+  "method": "Learn then Test（二項分布の片側の上限。OK の境の倍率 k について見逃しは単調）",
+  "confidence": 0.9,
+  "now_with_isaac_images": {
+   "k_ok": 1.0,
+   "n_defects": 24,
+   "misses": 0,
+   "miss_rate_max": 0.0915,
+   "comment": "今の Isaac Sim の画像で約束できるのはここまで（不良の枚数が少ないため）。2% には足りない"
+  },
+  "target_after_more_defects": {
+   "miss_rate_max": 0.02,
+   "n_defects_needed_if_0_miss": 114,
+   "n_defects_needed_if_1_miss": 194,
+   "comment": "伊佐美の撮り直し（範囲の中の不良を増やす）のあと、校正の画像で k を決め直して書き込む",
+   "synthetic_check": "疑似画像では、校正 300 枚で決めた k が約束（2%）を破った回は 0.0%（300 回、許す割合 10%）。ただし疑似画像の校正 500 枚で決めた k = 3.000 を Isaac Sim に使うと、見逃し 2/24 で約束を破った。k は、判定するのと同じ撮り方の画像で校正する"
+  },
+  "valid_while": [
+   "しきい値の版（thresholds）が校正のときと同じ",
+   "照明・背景・部品の形が範囲外の見張りの中",
+   "撮り方（カメラ・照明・倍率）と欠陥の測り方（濃さ）の版が校正のときと同じ。変えたら校正し直して版を上げる",
+   "実物では未確認（合成の画像だけの約束）。実物の答え合わせのあとで、実物の校正に置き換える"
+  ],
+  "audit": {
+   "rule": "工場がわざと流す不良の見本（濃さ min_contrast 以上）n 枚のうち、AI が OK にした数 m について P(Bin(n, miss_rate_max) ≧ m) ≦ 0.05 なら版を止める（guarantee.audit_stop）。止めたあとの判定は数えない",
+   "example": "上限 2% のとき、見本 50 枚で 4 枚以上見逃したら止める"
+  }
+ }
+}

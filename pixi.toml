@@ -26,6 +26,9 @@ dual_arm_urdf = "python src/dual_arm_inspection/isaac/export_urdf.py"
 # Isaac Sim で撮った画像（isaac/out/good と isaac/out/test）を判定し、疑似画像と比べる絵を docs/ に作る
 isaac_judge = "python src/dual_arm_inspection/isaac/judge_folder.py --good src/dual_arm_inspection/isaac/out/good --test src/dual_arm_inspection/isaac/out/test --json src/dual_arm_inspection/isaac/out/judge.json"
 isaac_figure = { cmd = "python src/dual_arm_inspection/isaac/make_compare_figure.py", depends-on = ["isaac_judge"] }
+# 保証つきのしきい値:「使用範囲の中なら見逃しは α 以下（確からしさ 90%）」を Isaac Sim と疑似画像で出し、限界も数字で
+# → docs/isaac_guarantee.png・src/dual_arm_inspection/isaac/scope_v3_draft.json（約 3 分）
+isaac_guarantee = "python src/dual_arm_inspection/isaac/guarantee_threshold.py"
 # 稼働台帳（src/robot_ledger）のテスト
 test_ledger = "python -m pytest src/robot_ledger/test -q"
 # 検査の台帳の通しの見本: 双腕セルの判定（Isaac Sim 162 枚・疑似画像 200 枚）を署名つきの台帳にし、
