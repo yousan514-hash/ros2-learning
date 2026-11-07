@@ -26,6 +26,11 @@ dual_arm_urdf = "python src/dual_arm_inspection/isaac/export_urdf.py"
 # Isaac Sim で撮った画像（isaac/out/good と isaac/out/test）を判定し、疑似画像と比べる絵を docs/ に作る
 isaac_judge = "python src/dual_arm_inspection/isaac/judge_folder.py --good src/dual_arm_inspection/isaac/out/good --test src/dual_arm_inspection/isaac/out/test --json src/dual_arm_inspection/isaac/out/judge.json"
 isaac_figure = { cmd = "python src/dual_arm_inspection/isaac/make_compare_figure.py", depends-on = ["isaac_judge"] }
+# 稼働台帳（src/robot_ledger）のテスト
+test_ledger = "python -m pytest src/robot_ledger/test -q"
+# 検査の台帳の通しの見本: 双腕セルの判定（Isaac Sim 162 枚・疑似画像 200 枚）を署名つきの台帳にし、
+# 工場の受け取りの署名と使用範囲書で請求額を出し、改ざんを見抜き、peaq の記録の形に書き出す → ledger/inspection_demo/
+inspection_ledger_demo = "python tools/inspection_ledger_demo.py"
 
 [activation.env]
 # 日本語を含むファイルや環境変数を、colcon が cp932 で読んで落ちるのを防ぐ

@@ -20,6 +20,7 @@ setup(
             "ledger_recorder = robot_ledger.recorder_node:main",
             "ledger_verify = robot_ledger.cli:verify_main",
             "ledger_bill = robot_ledger.cli:bill_main",
+            "inspection_recorder = robot_ledger.inspection_recorder_node:main",
         ],
     },
 )
