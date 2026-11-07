@@ -154,6 +154,14 @@ pixi run isaac_figure
 
 <img src="docs/isaac_vs_synthetic.png" width="720" alt="疑似画像と Isaac Sim の画像で、OK・NG・保留の表と判定の見本を並べた絵">
 
+**保留 18.5% の内訳と、見逃しの曲線（2026-11-07）。** 欠陥の大きさ（mm）と濃さ（%）という同じ物差しで、疑似画像と Isaac Sim を比べた（`pixi run python src/dual_arm_inspection/isaac/analyze_miss_curve.py`、約 40 秒。詳しくは [isaac の README](src/dual_arm_inspection/isaac/README.md)）。
+
+- 保留 30 枚 = 範囲外の照明 6（ねらいどおり）＋ **不良が形・明るさの見張りに当たった 13**（濃い汚れ・打痕）＋ 点数があいまいな不良 8（うち 5 は写り込みのあるボルトの先端の面）＋ 良品 3
+- 見逃しは、どちらも濃さ 20% 未満の薄い傷だけ。濃さ 20% 以上の不良は Isaac Sim で 0/45（95% の幅 0〜7.9%）
+- 見逃し 0 を狙って OK の境を締めると、人の時間は 4.7% → 39.7%（ラインに近い割合の仮定）。しきい値はそのままで見張りと保留の幅を直すと 4.0% のまま、全体の見逃しも 11.0% → 6.2%（上限の見積もり、人の見逃し 15% の仮定）
+
+<img src="docs/isaac_hold_tradeoff.png" width="720" alt="OK の境を動かしたときの、見逃しと保留の曲線（左）と、人の時間と全体の見逃しの曲線（右）">
+
 確認用のコマンド:
 
 ```powershell
