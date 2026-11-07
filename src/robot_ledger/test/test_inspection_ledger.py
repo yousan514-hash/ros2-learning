@@ -1,4 +1,4 @@
-"""検査の台帳のテスト: 使用範囲書で数える・工場の受け取りの署名・見逃しの申し立て・改ざんの見抜き。"""
+"""検査の台帳のテスト: 使用範囲書で数える・工場の受け取りの署名・見逃しの申し立て・改ざんの見抜き・使用範囲書の版。"""
 import copy
 
 import pytest
@@ -6,12 +6,18 @@ import pytest
 from robot_ledger.billing import LedgerInvalid
 from robot_ledger.inspection_ledger import (
     Factory, ReceiptMismatch, TrustedKeys, UsageScope, inspection_record, is_in_range,
-    make_inspection_bill, record_inspection, start_cell_ledger, thresholds_version,
+    make_inspection_bill, record_inspection, route_by_scope, start_cell_ledger, thresholds_version,
 )
 from robot_ledger.ledger import Ledger, RobotIdentity, canonical, sha256_hex
 
 IMG = "ab" * 32
 TH = thresholds_version({"t_ok": 3.0, "t_ng": 9.0})
+V0_FIELDS = ("cell_id", "thresholds", "price_per_inspection", "refund_per_miss", "refund_per_overkill",
+             "claim_window_s", "parts", "name")  # 版の欄を足す前の使用範囲書の欄
+# 瞳の案（src/dual_arm_inspection/isaac/README.md）の形: トレイの上・ボルトの頭・ナットと座金の下は AI、ほかは人へ
+FACES = {"auto_faces": ["bolt_*/side_top", "nut_*/top", "washer_*/top", "bolt_*/head_end", "nut_*/bottom",
+                        "washer_*/bottom"],
+         "human_faces": ["bolt_*/tip_end", "bolt_*/side_bottom", "nut_*/side"]}
 # (部品, 判定, reason): 範囲内の OK 2・NG 1・保留 1、範囲外 1
 SHOTS = [("bolt_M6x30", "OK", "clean"), ("nut_M6", "NG", "defect"), ("bolt_M6x30", "HOLD", "uncertain"),
          ("washer_M6", "HOLD", "out_of_range:gain"), ("nut_M6", "OK", "clean")]
@@ -147,7 +153,9 @@ def test_saved_ledgers_round_trip_and_still_bill(world, tmp_path):
     bill = make_inspection_bill(Ledger.load(tmp_path / "cell.jsonl"), Ledger.load(tmp_path / "factory.jsonl"),
                                 scope, keys)
     assert bill.amount == 300
-    assert scope.fingerprint() == sha256_hex(canonical(copy.deepcopy(scope).__dict__))
+    # 版の欄を書かない使用範囲書の指紋は、版の欄を足す前（最初の 8 つの欄だけ）と同じ → 前の台帳がそのまま読める
+    v0 = {k: v for k, v in copy.deepcopy(scope).__dict__.items() if k in V0_FIELDS}
+    assert scope.fingerprint() == sha256_hex(canonical(v0))
 
 
 def test_shot_matcher_pairs_topics_in_any_order():
@@ -161,3 +169,92 @@ def test_shot_matcher_pairs_topics_in_any_order():
     m.add_shot({"seq": 2, "stamp": [11, 0]})
     assert m.add_result({"seq": 2}) == []  # 画像がまだ
     assert m.add_image((11, 0), b"other")[0][1] == sha256_hex(b"other")
+
+
+# ---- 使用範囲書の版: 面ごとの自動／人へ・約束する濃さ ----
+def _v2(scope, **kw):
+    return UsageScope(**{**{k: getattr(scope, k) for k in V0_FIELDS}, "version": "v2", **FACES,
+                         "min_contrast": 0.2, "basis": "瞳の案", **kw})
+
+
+def _record_all(cell, scope, shots, route=True):
+    led = start_cell_ledger(cell, scope, t=0.0)
+    for i, (part, face, verdict, reason) in enumerate(shots, start=1):
+        rec = inspection_record(part, face, verdict, 1.0, reason, TH, IMG)
+        record_inspection(led, cell, route_by_scope(rec, scope) if route else rec, t=float(i))
+    return led
+
+
+def test_scope_version_fields_change_fingerprint_but_not_by_order(world):
+    cell, factory, keys, scope, led = world
+    v2 = _v2(scope)
+    assert v2.fingerprint() != scope.fingerprint()
+    shuffled = _v2(scope, auto_faces=list(reversed(FACES["auto_faces"])) + ["nut_*/top"])  # 並べ方・重なりは関係ない
+    assert shuffled.fingerprint() == v2.fingerprint()
+    assert _v2(scope, min_contrast=0.3).fingerprint() != v2.fingerprint()
+    with pytest.raises(ValueError):
+        _v2(scope, auto_faces=["head_end"])  # 「部品/面」の型でない
+    with pytest.raises(ValueError):
+        _v2(scope, min_contrast=0.0)
+    # 保存した使用範囲書を読み直すと同じ。中身だけ書き換えると、書いてある指紋と合わない
+    d = v2.to_dict()
+    assert UsageScope.from_dict(d) == v2
+    with pytest.raises(LedgerInvalid, match="指紋"):
+        UsageScope.from_dict({**d, "min_contrast": 0.05})
+
+
+def test_face_rules_send_faces_to_human_and_bill_only_auto_faces(world):
+    cell, factory, keys, scope, _ = world
+    v2 = _v2(scope)
+    assert v2.face_mode("bolt_M6x30", "head_end") == "auto" and v2.face_mode("washer_M8", "bottom") == "auto"
+    assert v2.face_mode("bolt_M6x30", "tip_end") == "human" and v2.face_mode("nut_M6", "side") == "human"
+    assert v2.face_mode("bolt_M6x30", "thread") == "human"  # 書いていない面は人へ
+    assert scope.face_mode("bolt_M6x30", "tip_end") == "auto"  # 面を書かない版は、すべての面を AI に任せる
+    shots = [("bolt_M6x30", "head_end", "OK", "clean"),         # 1 AI に任せる面 → 数える
+             ("bolt_M6x30", "tip_end", "OK", "clean"),          # 2 人に回す面 → 保留にして影の判定を残す
+             ("washer_M6", "top", "HOLD", "out_of_range:gain"),  # 3 範囲外はそのまま
+             ("nut_M6", "bottom", "HOLD", "uncertain"),          # 4 AI が迷った保留
+             ("bolt_M6x30", "side_top", "NG", "defect")]         # 5 数える
+    led = _record_all(cell, v2, shots)
+    assert led.entries[0].data["version"] == "v2" and led.entries[0].data["scope"] == v2.fingerprint()
+    routed = led.entries[2].data
+    assert (routed["verdict"], routed["reason"], routed["ai_verdict"], routed["ai_reason"]) == \
+        ("HOLD", "scope:face", "OK", "clean")
+    assert led.entries[3].data["reason"] == "out_of_range:gain" and "ai_verdict" not in led.entries[3].data
+    # セルが振り分けを忘れて、人に回す面で AI が決めた行を書いても、請求では数えない
+    record_inspection(led, cell, inspection_record("nut_M6", "side", "NG", 1.0, "defect", TH, IMG), t=6.0)
+    receipt = factory.receive(led, v2, upto_seq=6, t=10.0)
+    assert receipt.data["scope"] == v2.fingerprint()
+    factory.claim(led, v2, 2, "miss", "人に回した面", t=20.0, contrast=0.9)
+    bill = make_inspection_bill(led, factory.ledger, v2, keys)
+    s = bill.summary()
+    assert (s["counted"], s["face"], s["out_of_range"], s["hold"]) == (2, 2, 1, 1)
+    assert bill.amount == 200 and s["rejected_by"] == {"not_counted": 1}
+    # 同じ判定を版を書かない使用範囲書で数えると、人に回す面も数える（範囲が広いほど請求の件数は増える）
+    led1 = _record_all(cell, scope, shots + [("nut_M6", "side", "NG", "defect")])
+    f1 = Factory(factory.identity, keys.cell)
+    f1.receive(led1, scope, upto_seq=6, t=10.0)
+    assert make_inspection_bill(led1, f1.ledger, scope, keys).count("counted") == 4
+
+
+def test_miss_claims_are_refunded_only_within_promised_contrast(world):
+    cell, factory, keys, scope, _ = world
+    v2 = _v2(scope)
+    shots = [("nut_M6", "top", "OK", "clean"), ("nut_M6", "top", "OK", "clean"), ("bolt_M6x30", "head_end", "OK", "clean"),
+             ("washer_M6", "bottom", "NG", "defect")]
+    led = _record_all(cell, v2, shots)
+    factory.receive(led, v2, upto_seq=4, t=10.0)
+    factory.claim(led, v2, 1, "miss", "薄い傷", t=20.0, contrast=0.12)   # 約束（20% 以上）の外 → 認めない
+    factory.claim(led, v2, 2, "miss", "濃い打痕", t=21.0, contrast=0.35)  # 約束の内 → 認める
+    factory.claim(led, v2, 3, "miss", "濃さを測っていない", t=22.0)        # 約束の内か決められない → 認めない
+    factory.claim(led, v2, 4, "overkill", "良品だった", t=23.0)           # 過検出には濃さは関係ない → 認める
+    bill = make_inspection_bill(led, factory.ledger, v2, keys)
+    s = bill.summary()
+    assert s["rejected_by"] == {"promise": 2} and (s["refund_miss"], s["refund_overkill"]) == (1, 1)
+    assert bill.refund_total == 1000 + 100 and "約束" in bill.claims_rejected[0]
+    # 約束の濃さを書かない使用範囲書なら、薄い傷の見逃しも減額する
+    led1 = _record_all(cell, scope, shots)
+    f1 = Factory(factory.identity, keys.cell)
+    f1.receive(led1, scope, upto_seq=4, t=10.0)
+    f1.claim(led1, scope, 1, "miss", "薄い傷", t=20.0, contrast=0.12)
+    assert make_inspection_bill(led1, f1.ledger, scope, keys).refund_total == 1000

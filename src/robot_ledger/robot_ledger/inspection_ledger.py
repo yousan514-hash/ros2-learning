@@ -12,11 +12,15 @@
 - 請求（make_inspection_bill）: 2つの台帳を、信頼する鍵の一覧（TrustedKeys）で確かめてから数える。
   受け取りの署名がない分は数えない。受け取ったあとでセルが自分の鍵で台帳を作り直しても、
   受け取りの署名に入れたハッシュと合わなくなるので見抜ける（1者の署名では防げない所を、2者の署名で防ぐ）
+- 使用範囲書の版（version・auto_faces・human_faces・min_contrast・basis）: 面ごとに「AI に任せる／人に回す」と、
+  検出を約束する欠陥の濃さを書ける。人に回す面は、セルが AI の判定を影（ai_verdict）に残して保留にし（route_by_scope）、
+  請求では数えない。約束の濃さより薄い欠陥の見逃しは、申し立てても減額しない。版の欄を書かなければ前と同じ指紋になる
 """
 from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 from robot_ledger.billing import LedgerInvalid
@@ -94,12 +98,72 @@ class UsageScope:
     claim_window_s: float = 30 * 24 * 3600.0  # 受け取りから何秒までの申し立てを認めるか
     parts: list[str] = field(default_factory=list)  # 対象の部品（空ならすべて）
     name: str = ""
+    # ---- 使用範囲書の版（2026-11-07 に足した欄）。書かなければ指紋は前と同じ ----
+    version: str = ""                                     # 版の名前（例 "v2"）
+    auto_faces: list[str] = field(default_factory=list)   # AI に任せる面「部品/面」の型（例 "bolt_*/head_end"）。空ならすべての面
+    human_faces: list[str] = field(default_factory=list)  # 人に回す面（auto_faces より強い）
+    min_contrast: float | None = None                     # 検出を約束する欠陥の濃さ（0〜1）。これより薄い見逃しは減額しない
+    basis: str = ""                                       # 根拠（どの評価から決めたか）
+
+    def __post_init__(self):
+        for pat in self.auto_faces + self.human_faces:
+            if "/" not in pat:
+                raise ValueError(f"面は「部品/面」の型で書く（例 bolt_*/head_end）: {pat}")
+        if self.min_contrast is not None and not 0.0 < self.min_contrast <= 1.0:
+            raise ValueError(f"約束する濃さは 0 より大きく 1 以下: {self.min_contrast}")
+        # 並べ方で指紋が変わらないように、面の型は並べ替えて重なりを消す
+        self.auto_faces = sorted(set(self.auto_faces))
+        self.human_faces = sorted(set(self.human_faces))
 
     def fingerprint(self) -> str:
-        return sha256_hex(canonical(asdict(self)))
+        """指紋 = 中身の正規化 JSON の SHA-256。版の欄は、書いたときだけ入れる（前の版の台帳がそのまま読める）。"""
+        d = asdict(self)
+        for k, default in VERSION_DEFAULTS.items():
+            if d[k] == default:
+                del d[k]
+        return sha256_hex(canonical(d))
 
     def to_dict(self) -> dict:
         return asdict(self) | {"fingerprint": self.fingerprint()}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> UsageScope:
+        """保存した使用範囲書を読む。指紋が書いてあれば、中身から計算し直した指紋と合うか確かめる。"""
+        d = dict(d)
+        fp = d.pop("fingerprint", None)
+        scope = cls(**d)
+        if fp is not None and fp != scope.fingerprint():
+            raise LedgerInvalid(["使用範囲書のファイルの中身と、書いてある指紋が合わない（書き換えられた）"])
+        return scope
+
+    def face_mode(self, part: str, face: str) -> str:
+        """この面を AI に任せるか（"auto"）、人に回すか（"human"）。人に回すが優先。書いていない面は人へ。"""
+        key = f"{part}/{face}"
+        if any(fnmatchcase(key, p) for p in self.human_faces):
+            return "human"
+        if self.auto_faces and not any(fnmatchcase(key, p) for p in self.auto_faces):
+            return "human"
+        return "auto"
+
+    def promises(self, contrast: float | None) -> bool:
+        """この濃さの欠陥を見つけることを約束しているか（約束の濃さがなければ、すべて約束する）。"""
+        if self.min_contrast is None:
+            return True
+        return contrast is not None and contrast >= self.min_contrast
+
+
+VERSION_DEFAULTS = {"version": "", "auto_faces": [], "human_faces": [], "min_contrast": None, "basis": ""}
+
+
+def route_by_scope(record: dict, scope: UsageScope) -> dict:
+    """セルが台帳に書く前に通す: 使用範囲書で人に回す面なら保留にし、AI の判定は影（ai_verdict）として残す。
+
+    範囲外（照明など）はもともと保留なのでそのまま。影の判定は請求には使わないが、範囲を広げる根拠を貯めるのに使う。
+    """
+    if not record["in_range"] or scope.face_mode(record["part"], record["face"]) == "auto":
+        return record
+    return {**record, "verdict": "HOLD", "reason": "scope:face",
+            "ai_verdict": record["verdict"], "ai_reason": record["reason"]}
 
 
 # ---- 検査セルの側 ----
@@ -108,7 +172,10 @@ def start_cell_ledger(identity: RobotIdentity, scope: UsageScope, t: float | Non
     if identity.robot_id != scope.cell_id:
         raise ValueError("使用範囲書のセルの ID と、鍵の ID が違う")
     led = Ledger()
-    led.append(identity, EV_SCOPE, {"scope": scope.fingerprint(), "thresholds": scope.thresholds}, t=t)
+    head = {"scope": scope.fingerprint(), "thresholds": scope.thresholds}
+    if scope.version:
+        head["version"] = scope.version  # 読む人のための目印。約束を結びつけるのは指紋
+    led.append(identity, EV_SCOPE, head, t=t)
     return led
 
 
@@ -154,13 +221,18 @@ class Factory:
         return self.ledger.append(self.identity, EV_RECEIPT, data, t=t)
 
     def claim(self, cell_ledger: Ledger, scope: UsageScope, seq: int, kind: str, note: str = "",
-              t: float | None = None) -> Entry:
-        """後から見つかった見逃し（miss）・過検出（overkill）を、セルの台帳の行を指して申し立てる。"""
+              t: float | None = None, contrast: float | None = None) -> Entry:
+        """後から見つかった見逃し（miss）・過検出（overkill）を、セルの台帳の行を指して申し立てる。
+
+        contrast: 工場が測った欠陥の濃さ（0〜1、良品の平均からの明るさのずれの最大）。使用範囲書に約束の濃さがあれば要る。
+        """
         if kind not in CLAIM_KINDS:
             raise ValueError(f"申し立ての種類は {tuple(CLAIM_KINDS)} のどれか: {kind}")
         e = cell_ledger.entries[seq]
         data = {"cell_id": scope.cell_id, "scope": scope.fingerprint(), "seq": seq, "entry_hash": e.hash,
                 "kind": kind, "note": note}
+        if contrast is not None:
+            data["contrast"] = round(float(contrast), 4)
         return self.ledger.append(self.identity, EV_CLAIM, data, t=t)
 
 
@@ -169,6 +241,7 @@ STATUS_JA = {
     "counted": "数える（範囲内で AI が自分で決めた）",
     "hold": "数えない: 保留（人に回した）",
     "out_of_range": "数えない: 範囲外（人に回した）",
+    "face": "数えない: 使用範囲書で人に回す面",
     "thresholds": "数えない: しきい値の版が使用範囲書と違う",
     "part": "数えない: 使用範囲書にない部品",
     "not_received": "数えない: 工場の受け取りの署名がない",
@@ -194,6 +267,7 @@ class InspectionBill:
     refund_total: int = 0                        # 申し立てで減らした額
     claims_accepted: list[str] = field(default_factory=list)
     claims_rejected: list[str] = field(default_factory=list)
+    rejected_by: dict[str, int] = field(default_factory=dict)  # 認めなかった理由 → 件数（REJECT_JA の鍵）
 
     @property
     def amount(self) -> int:
@@ -208,7 +282,14 @@ class InspectionBill:
                 "counted_ok": self.count("counted", "OK"), "counted_ng": self.count("counted", "NG"),
                 **{k: self.count(k) for k in STATUS_JA if k != "counted"},
                 "gross": self.gross, "refund_total": self.refund_total, "amount": self.amount,
-                "claims_accepted": len(self.claims_accepted), "claims_rejected": len(self.claims_rejected)}
+                "claims_accepted": len(self.claims_accepted), "claims_rejected": len(self.claims_rejected),
+                "refund_miss": sum(1 for ln in self.lines if ln.note == "miss"),
+                "refund_overkill": sum(1 for ln in self.lines if ln.note == "overkill"),
+                "rejected_by": dict(self.rejected_by)}
+
+
+REJECT_JA = {"not_found": "指している行がない", "not_counted": "数えていない行（人が見た）", "kind": "判定と種類が合わない",
+             "promise": "約束の濃さより薄い", "window": "期限切れ", "duplicate": "2回目"}
 
 
 class ReceiptMismatch(LedgerInvalid):
@@ -252,6 +333,8 @@ def make_inspection_bill(cell_ledger: Ledger, factory_ledger: Ledger, scope: Usa
         d = e.data
         if not d.get("in_range", False):
             status = "out_of_range"
+        elif scope.face_mode(d["part"], d["face"]) == "human":
+            status = "face"  # セルが保留にしていなくても数えない（人に回す約束の面）
         elif d["verdict"] == "HOLD":
             status = "hold"
         elif d.get("thresholds") != scope.thresholds:
@@ -276,16 +359,24 @@ def make_inspection_bill(cell_ledger: Ledger, factory_ledger: Ledger, scope: Usa
         seq, kind = c.data["seq"], c.data["kind"]
         tag = f"工場の seq {c.seq}: 検査の seq {seq} を {kind}"
         line = by_seq.get(seq)
+        con = c.data.get("contrast")
+        why = None
         if line is None or seq >= len(cell_ledger.entries) or cell_ledger.entries[seq].hash != c.data["entry_hash"]:
-            bill.claims_rejected.append(tag + " → 指している検査の行が見つからない・中身が違う")
+            why = "not_found", "指している検査の行が見つからない・中身が違う"
         elif line.status != "counted":
-            bill.claims_rejected.append(tag + f" → 数えていない行（{STATUS_JA[line.status]}）。人が見た分は AI の責任にしない")
+            why = "not_counted", f"数えていない行（{STATUS_JA[line.status]}）。人が見た分は AI の責任にしない"
         elif CLAIM_KINDS.get(kind) != line.verdict:
-            bill.claims_rejected.append(tag + f" → 判定が {line.verdict} の行には {kind} を申し立てられない")
+            why = "kind", f"判定が {line.verdict} の行には {kind} を申し立てられない"
+        elif kind == "miss" and not scope.promises(con):
+            why = "promise", ((f"濃さ {con:.0%}" if con is not None else "濃さの測りがなく")
+                              + f"、約束（濃さ {scope.min_contrast:.0%} 以上）の外。薄い欠陥の見逃しは減額しない")
         elif c.time - received[seq] > scope.claim_window_s:
-            bill.claims_rejected.append(tag + " → 申し立ての期限を過ぎている")
+            why = "window", "申し立ての期限を過ぎている"
         elif seq in done:
-            bill.claims_rejected.append(tag + " → 同じ行への2回目の申し立て")
+            why = "duplicate", "同じ行への2回目の申し立て"
+        if why is not None:
+            bill.claims_rejected.append(tag + " → " + why[1])
+            bill.rejected_by[why[0]] = bill.rejected_by.get(why[0], 0) + 1
         else:
             done.add(seq)
             line.refund = refund[kind]
