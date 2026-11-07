@@ -3,13 +3,15 @@
 藤田さんのナレッジ「精度100%を目指さない外観検査AI」の考えに合わせた:
   - 良品だけで学ぶ: 部品と面の種類ごとに、良品の画像から「平均の見え方」と「ばらつき」を作る
   - 3 段判定: 確実に良品 → OK（自動で通す）、確実に不良 → NG（自動で弾く）、あいまい → 保留（人に回す）
-  - 範囲外の見張り: 明るさ・背景・明るさの傾き・部品の面積が、学んだときの範囲（使用範囲）から外れたら、
-    欠陥の点数に関係なく保留にして人に回す（照明の劣化や外からの光に気づく）
+  - 範囲外の見張り: 明るさ・背景・明るさの傾き・部品の形（学んだ形からのはみ出し）が、学んだときの範囲
+    （使用範囲）から外れたら、欠陥の点数に関係なく保留にして人に回す（照明の劣化や外からの光に気づく）。
+    部品の一部が暗く「欠けて」見えるのは濃い汚れ・打痕の可能性が高いので、範囲外にせず点数に回す
 
 やり方:
   1. 部品を背景から切り出す（大津の二値化 → いちばん大きい輪郭。小さい穴は欠陥なので埋め、大きい穴は残す）
-  2. 重心と軸の向きで、画像を決まった位置・向きに合わせる
-  3. 平均の見え方で割り、明るさの平面（倍率と傾き）を外れ値に強いやり方で当てはめて取り除く
+  2. 重心と軸の向きで、画像を決まった位置・向きに合わせる。部品が暗く欠けて（濃い汚れ・打痕）重心がずれたときは、
+     残った明るい所が学んだ形にいちばん収まる位置・向きへ合わせ直す
+  3. 平均の見え方で割り、明るさの平面（倍率と傾き）を外れ値に強いやり方で当てはめて取り除く（欠けた所は使わない）
   4. 残ったずれを、良品のばらつきで割った値（z）が大きい所をまとめ、いちばん大きいまとまりの強さを点数にする
   5. 点数の 2 つのしきい値（良品だけで決める）で 3 段に分ける
 """
@@ -27,8 +29,13 @@ Z_PIX = 3.0            # 1 画素が「ふつうでない」とみなす z（良
 MIN_AREA = 3
 SIGMA_FLOOR = 0.012
 ALIGN_TOL_PX = 0.35   # 位置合わせのずれの見込み（画素）
-ENV_MARGIN = {"gain": 0.04, "background": 5.0, "grad": 0.03}
-AREA_TOL = 0.15
+# 見張る量と、学んだ範囲に足す余裕。extra は学んだ形からの「はみ出し」の割合（指・隣の部品・別の部品に気づく。
+# 手で持つ面は良品でも指が写るので、良品で学んだ範囲で見る）
+ENV_MARGIN = {"gain": 0.04, "background": 5.0, "grad": 0.03, "extra": 0.03}
+MISSING_MAX = 0.60         # 学んだ形のこの割合より多く欠けていたら、欠陥ではなく部品が違う・見切れているとみなす
+REFINE_MIN = 0.02          # 欠けがこの割合を超えたら、重心がずれているので学んだ形に合わせ直す
+SHAPE_BAND_PX = 2          # 形を比べるとき、縁のこの幅は位置合わせのずれとして数えない
+FIT_ERODE_PX = 3           # 明るさの平面を当てはめるとき、欠けた所の縁からこの幅も使わない（ぼけた縁に引っ張られない）
 COLORS = {"OK": (12, 163, 12), "NG": (208, 59, 59), "HOLD": (250, 178, 25)}  # RGB（状態の色）
 LABEL_JA = {"OK": "OK", "NG": "NG", "HOLD": "保留"}
 _GRIDS: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]] = {}
@@ -106,6 +113,60 @@ def align(gray: np.ndarray, mask: np.ndarray, profile: bool) -> tuple[np.ndarray
     return a, m, M
 
 
+def warp(gray: np.ndarray, mask: np.ndarray, M: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """2x3 の変換で画像とマスクを合わせる（align と同じ補間）。"""
+    h, w = gray.shape[:2]
+    a = cv2.warpAffine(gray, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    m = cv2.warpAffine(mask.astype(np.float32), M, (w, h), flags=cv2.INTER_LINEAR)
+    return a, m
+
+
+def shape_diff(m: np.ndarray, roi: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """合わせたマスクと学んだ形の差: (欠けた所, はみ出た所)。縁の SHAPE_BAND_PX 画素は位置合わせのずれとして数えない。
+
+    欠けた所 = 学んだ形の中なのに暗い（大津の二値化で部品から外れた）所。濃い汚れ・打痕・大きな穴
+    はみ出た所 = 学んだ形の外なのに明るい所。指・隣の部品・別の部品・照明の大きな変化
+    """
+    k = np.ones((2 * SHAPE_BAND_PX + 1,) * 2, np.uint8)
+    roi8 = roi.astype(np.uint8)
+    inner = cv2.erode(roi8, k) > 0
+    outer = cv2.dilate(roi8, k) > 0
+    bright = m > 0.5
+    return inner & ~bright, bright & ~outer
+
+
+def refine_align(mask: np.ndarray, M: np.ndarray, roi: np.ndarray, radius: float) -> tuple[np.ndarray, tuple[int, int]]:
+    """部品の一部が暗く欠けて重心がずれたとき、残った明るい所が学んだ形にいちばん収まる位置へずらし直す。
+
+    学んだ形の中を +1、外を -1 の重みにして、マスクを半径の半分までずらしながら重みの合計（相互相関）が
+    いちばん大きい所を探す。欠けた所は 0 なので効かず、はみ出すと減点される。向きは変えない（手で持つ面は
+    指も写るので、向きまで合わせ直すとかえってずれた）。戻り値は (直した 2x3 の変換, ずらした量 px)。
+    """
+    h, w = roi.shape
+    R = int(max(8, round(0.5 * radius)))
+    weight = np.where(roi, 1.0, -1.0).astype(np.float32)
+    padded = cv2.copyMakeBorder(weight, R, R, R, R, cv2.BORDER_CONSTANT, value=-1.0)
+    m = (cv2.warpAffine(mask.astype(np.float32), M, (w, h), flags=cv2.INTER_NEAREST) > 0.5).astype(np.float32)
+    res = cv2.matchTemplate(padded, m, cv2.TM_CCORR)
+    _, _, _, loc = cv2.minMaxLoc(res)
+    dx, dy = loc[0] - R, loc[1] - R
+    Mt = M.copy()
+    Mt[:, 2] += (dx, dy)
+    return Mt, (int(dx), int(dy))
+
+
+def fit_region(m: np.ndarray, roi: np.ndarray) -> np.ndarray:
+    """明るさの平面を当てはめる所: 学んだ形の中から、暗く欠けた所とそのぼけた縁（FIT_ERODE_PX）を除いた所。
+
+    欠けがなければ学んだ形の全部（＝前と同じ）。良品の判定は変わらない。
+    """
+    dark = (roi & ~(m > 0.5)).astype(np.uint8)
+    if not dark.any():
+        return roi
+    near_dark = cv2.dilate(dark, np.ones((2 * FIT_ERODE_PX + 1,) * 2, np.uint8)) > 0
+    return roi & ~near_dark
+
+
 def _plane_fit(R: np.ndarray, roi: np.ndarray, iters: int = 3) -> np.ndarray:
     """R ≈ a + b*x + c*y を、外れ値（欠陥）を除きながら当てはめる。"""
     ys, xs = np.nonzero(roi[::2, ::2])
@@ -125,10 +186,16 @@ def _plane_fit(R: np.ndarray, roi: np.ndarray, iters: int = 3) -> np.ndarray:
     return coef
 
 
-def measure(A: np.ndarray, mean: np.ndarray, roi: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """(ずれの地図 D, 明るさの平面の係数)。D = 画像 / (平均の見え方 × 平面) - 1。"""
+def measure(A: np.ndarray, mean: np.ndarray, roi: np.ndarray,
+            fit_roi: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """(ずれの地図 D, 明るさの平面の係数)。D = 画像 / (平均の見え方 × 平面) - 1。
+
+    fit_roi を渡すと、明るさの平面はその中だけで当てはめる（欠けた所＝濃い欠陥に引っ張られて
+    「暗くなった」と誤解しないため）。D は roi の全部で出す。
+    """
     R = np.where(roi, A / np.maximum(mean, 1e-3), 0.0)
-    coef = _plane_fit(R, roi)
+    fit_on = roi if fit_roi is None or fit_roi[::2, ::2].sum() < 20 else fit_roi
+    coef = _plane_fit(R, fit_on)
     xn, yn = _grid(roi.shape)
     plane = coef[0] + coef[1] * xn + coef[2] * yn
     D = np.where(roi, R / np.maximum(plane, 1e-3) - 1.0, 0.0).astype(np.float32)
@@ -201,12 +268,17 @@ class Inspector:
         return out
 
     # ---- 良品だけで学ぶ ----
-    def _features(self, gray, mask, tpl: Template, coef) -> dict:
+    def _features(self, gray, mask, tpl: Template, coef, m=None) -> dict:
         center = float(coef[0])
-        return {"gain": center / tpl.ref_level,
-                "background": background_level(gray, mask),
-                "grad": float(math.hypot(coef[1], coef[2]) / max(center, 1e-6) * tpl.radius / 100.0),
-                "area_ratio": float(mask.sum() / tpl.area)}
+        feats = {"gain": center / tpl.ref_level,
+                 "background": background_level(gray, mask),
+                 "grad": float(math.hypot(coef[1], coef[2]) / max(center, 1e-6) * tpl.radius / 100.0),
+                 "area_ratio": float(mask.sum() / tpl.area)}
+        if m is not None:
+            missing, extra = shape_diff(m, tpl.roi)
+            feats["missing"] = float(missing.sum() / tpl.area)   # 学んだ形のうち暗く欠けた割合（欠陥の候補）
+            feats["extra"] = float(extra.sum() / tpl.area)       # 学んだ形からはみ出た割合（見張りの対象）
+        return feats
 
     def calibrate(self, n_fit: int = 20, n_val: int = 20, seed: int = 20261106) -> dict:
         """疑似カメラで良品（欠陥なし・ふつうの照明）を撮り、それだけで学ぶ。"""
@@ -249,7 +321,7 @@ class Inspector:
             area = float(np.mean([mk.sum() for _, mk, _, _ in fit]))
             radius = math.sqrt(area / math.pi)  # 明るさの傾きを「部品の端から端で何割」に直すための大きさ
             tpl = Template(mean, np.ones_like(mean), roi, area, 1.0, radius)
-            measured = [measure(a, mean, roi) for _, _, a, _ in shots]
+            measured = [measure(a, mean, roi, fit_roi=fit_region(m, roi)) for _, _, a, m in shots]  # 判定と同じ当てはめ方
             devs = [cv2.GaussianBlur(D, (3, 3), 0) for D, _ in measured[:n_fit]]
             centers = [coef[0] for _, coef in measured[:n_fit]]
             tpl.ref_level = float(np.mean(centers))
@@ -260,7 +332,7 @@ class Inspector:
             edge = ALIGN_TOL_PX * np.hypot(gx, gy) / np.maximum(mean, 1e-3)
             sigma = np.sqrt(cv2.GaussianBlur(sigma, (0, 0), 1.0) ** 2 + edge ** 2)
             tpl.sigma = np.maximum(sigma, SIGMA_FLOOR).astype(np.float32)
-            feats = [self._features(gray, mk, tpl, coef) for (gray, mk, _, _), (_, coef) in zip(shots, measured)]
+            feats = [self._features(gray, mk, tpl, coef, m) for (gray, mk, _, m), (_, coef) in zip(shots, measured)]
             for k, margin in ENV_MARGIN.items():
                 vals = np.array([f[k] for f in feats])
                 spread = float(vals.max() - vals.min())
@@ -294,10 +366,19 @@ class Inspector:
         mask = segment(gray)
         if mask is None:
             return Result("HOLD", 0.0, "no_part")
-        a, m, M = align(gray, mask, base_type(face_type) in imaging.PROFILE_TYPES)
-        D, coef = measure(a, tpl.mean, tpl.roi)
-        feats = self._features(gray, mask, tpl, coef)
-        if abs(feats["area_ratio"] - 1.0) > AREA_TOL:
+        profile = base_type(face_type) in imaging.PROFILE_TYPES
+        a, m, M = align(gray, mask, profile)
+        missing, _ = shape_diff(m, tpl.roi)
+        shift = (0, 0)
+        if missing.sum() > REFINE_MIN * tpl.area:  # 暗く欠けて重心がずれたかもしれない → 学んだ形に合わせ直す
+            M, shift = refine_align(mask, M, tpl.roi, tpl.radius)
+            a, m = warp(gray, mask, M)
+        D, coef = measure(a, tpl.mean, tpl.roi, fit_roi=fit_region(m, tpl.roi))
+        feats = self._features(gray, mask, tpl, coef, m)
+        feats["shift"] = shift
+        # 形の見張り: 欠けが大きすぎる（部品が違う・見切れ）ときだけ範囲外。はみ出し（指・別の物）は
+        # 良品で学んだ範囲（env の extra）で見る。部品の中や縁が暗く欠けているのは濃い汚れ・打痕の候補なので点数へ
+        if feats["missing"] > MISSING_MAX:
             return Result("HOLD", 0.0, "shape", features=feats)
         for k in ENV_MARGIN:
             if not tpl.env_lo[k] <= feats[k] <= tpl.env_hi[k]:
